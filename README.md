@@ -1,5 +1,36 @@
 # ArtStitch
 
+## Installation
+
+ArtStitch runs on your own computer and opens in your browser. It needs Python
+3.12 or newer (`python3 --version` tells which you have; python.org has the
+installers).
+
+```bash
+git clone https://github.com/righeile/artstitch.git
+cd artstitch
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+Then start it: double-click **`run_mac.command`** (it uses the `.venv` by itself,
+offers to install anything missing, and opens the page), or
+
+```bash
+.venv/bin/python app.py      # then open http://127.0.0.1:8800
+```
+
+On Windows, install into the Python that `python` runs
+(`python -m pip install -r requirements.txt`), then double-click
+**`run_windows.bat`** or run `python app.py`. The Windows launcher has not been
+tried on Windows yet.
+
+`--port` changes the port; `--state` changes where presets are kept (default
+`~/.artstitch`). Starting a launcher stops an older copy still running.
+`.venv/bin/python test_artstitch.py` (see Checks) confirms the install.
+
+## What it does
+
 Flatbed scans of one artwork, in two to eight parts (more works too), into one
 picture. The parts are found by name, matched to each other, cut apart along the
 path where they already agree (nothing is blended, so nothing is softened),
@@ -9,18 +40,6 @@ like. A folder with many artworks in it is done the same way, unattended.
 The matching is ASFQ's stitching engine (masked normalized cross-correlation by
 FFT, dense displacement mesh, graph-cut seams), with a rotation search added and
 the histology parts taken out.
-
-## Start
-
-Double-click **`run_mac.command`** (or **`run_windows.bat`**), or:
-
-```bash
-python3 app.py      # then open http://127.0.0.1:8800
-```
-
-Needs `pip install -r requirements.txt`. `--port` changes the port; `--state`
-changes where presets are kept (default `~/.artstitch`). Starting a launcher
-stops an older copy still running.
 
 ## Pages
 
