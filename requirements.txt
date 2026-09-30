@@ -1,0 +1,13 @@
+# Upper bounds are the majors that are known to break this code, not caution:
+# see ../requirements-apps.txt, which is the environment these apps actually
+# run in (one shared .venv, symlinked as .venv in each app).
+numpy>=1.24,<3
+scipy>=1.10,<2
+opencv-python>=4.8,<6        # warps, seam graph-cut, box scaling; the headless build works too
+tifffile>=2026.9.20
+imagecodecs>=2026.8.16           # zopfli, lzma and zstd for the full-size TIFF (still lossless).
+                                 # The floors are the shared .venv's -- see ../requirements-apps.txt.
+                                 # imagecodecs 2026 renamed zopfli_encode's numiterations= to level=;
+                                 # export.py passes level=, which is valid either side of the rename.
+pillow>=10.0,<13              # PNG and JPEG writing
+flask>=3.0,<4

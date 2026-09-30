@@ -1,0 +1,6 @@
+# The shared environment, symlinked in (no trailing slash: git sees the symlink as a file).
+.venv
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store

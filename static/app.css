@@ -1,0 +1,125 @@
+/* ArtStitch -- only what is particular to this app.
+ *
+ * The palette, buttons, inputs, panels, tables, badges, progress bars and the file dialog come from
+ * labkit.css, which is loaded first.  What is left here is the six-page shell, the image viewer, and
+ * the few controls no other tool has: levels, curve, crop fields, output rows.
+ */
+
+main { padding: 14px 16px 40px; max-width: 1700px; margin: 0 auto; }
+.page { display: none; }
+.page.active { display: block; }
+.topbar .brand span { color: var(--accent); }
+.topbar .brand small { color: var(--dim); font-size: 12px; font-weight: 400; letter-spacing: 0; }
+.sidebar-note { color: var(--dim); font-size: 11px; }
+
+/* The page selector: a vertical rail on wide screens, a row when narrow. */
+.shell { display: grid; grid-template-columns: 196px minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 900px) { .shell { grid-template-columns: 1fr; } .rail { position: static; flex-direction: row; flex-wrap: wrap; } }
+.rail { position: sticky; top: 56px; display: flex; flex-direction: column; gap: 3px; }
+.rail button { justify-content: flex-start; text-align: left; width: 100%; background: none; border: 1px solid transparent; }
+.rail button:hover { background: var(--panel2); }
+.rail button.on { background: var(--accent-wash); border-color: var(--accent-edge); color: var(--ink); box-shadow: inset 3px 0 0 var(--accent); }
+.rail .step { color: var(--faint); font-family: var(--mono); margin-right: 7px; }
+
+h2.page-title { margin: 0 0 4px; font-size: 16px; }
+.page-hint { color: var(--dim); margin: 0 0 14px; max-width: 80ch; }
+
+.cols { display: grid; gap: 14px; align-items: start; }
+.cols.two { grid-template-columns: 1fr 1fr; }
+.cols.view { grid-template-columns: minmax(0, 1fr) 330px; }
+@media (max-width: 1100px) { .cols.two, .cols.view { grid-template-columns: 1fr; } }
+
+input.mini { width: 76px; }
+/* labkit lets every span in a row grow; these should not */
+.row > .divider { flex: 0 0 1px; }
+.output .row > span, .viewbar > span:not(.spacer) { flex: 0 0 auto; }
+.hint.warn { color: var(--warn); }
+
+/* ------------------------------------------------------------------ viewer */
+.viewer {
+  position: relative; height: min(70vh, 860px); min-height: 380px; overflow: hidden;
+  background: var(--canvas); border: 1px solid var(--line); border-radius: var(--radius);
+  touch-action: none; user-select: none;
+}
+.viewer canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.viewer .empty {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  padding: 20px; text-align: center; color: var(--dim);
+}
+.viewer .loading {
+  position: absolute; right: 10px; top: 10px; width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--accent); animation: lk-spin .7s linear infinite;
+}
+.viewbar { margin-bottom: 6px; }
+.viewbar .spacer { flex: 1 1 auto; }
+
+/* --------------------------------------------------------------- QC, tiles */
+.qc-item { padding: 6px 10px; border-radius: var(--radius); background: var(--field); border-left: 3px solid var(--line); margin-bottom: 5px; }
+.qc-item.error { border-left-color: var(--bad); }
+.qc-item.warn { border-left-color: var(--warn); }
+.qc-item.ok { border-left-color: var(--ok); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12px; }
+.kv dt { color: var(--dim); }
+.kv dd { margin: 0; font-family: var(--mono); text-align: right; }
+table.grid td.num, table.grid th.num { text-align: right; font-family: var(--mono); }
+table.grid td.bad { color: var(--bad); }
+table.grid td.good { color: var(--ok); }
+
+/* ------------------------------------------------------------ scans / sets */
+.setcard { margin-bottom: 10px; }
+.setcard .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.setcard .head b { font-size: 13.5px; }
+.setcard .files { margin-top: 8px; display: grid; gap: 2px; }
+.setcard .file { display: flex; align-items: center; gap: 10px; padding: 3px 6px; border-radius: var(--radius); }
+.setcard .file:hover { background: var(--panel2); }
+.setcard .file .name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setcard .file .meta { color: var(--dim); font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+.setcard.off { opacity: .55; }
+
+/* ------------------------------------------------------------------ crop */
+.cropgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+.cropgrid label { display: flex; align-items: center; gap: 6px; }
+.cropgrid label input { flex: 1 1 auto; width: 100%; min-width: 0; }
+
+/* ---------------------------------------------------------------- color */
+#histCanvas { width: 100%; height: 96px; background: var(--field); border: 1px solid var(--line); border-radius: var(--radius); cursor: default; }
+#curveCanvas { width: 100%; aspect-ratio: 1; background: var(--field); border: 1px solid var(--line); border-radius: var(--radius); cursor: crosshair; }
+.levelrow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0; }
+.levelrow label { display: flex; flex-direction: column; gap: 3px; }
+.levelrow input { width: 100%; }
+.slider { display: grid; grid-template-columns: 92px 1fr 56px; gap: 8px; align-items: center; margin-bottom: 5px; }
+.slider label { cursor: pointer; }
+.slider input[type=number] { padding: 3px 5px; text-align: right; }
+button.armed { background: var(--accent-deep); border-color: var(--accent-edge); color: var(--on-accent); }
+
+/* ---------------------------------------------------------------- export */
+.output { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; margin-bottom: 8px; background: var(--field); }
+.output .row { margin-bottom: 5px; }
+.output .row:last-child { margin-bottom: 0; }
+.output .kind { flex: 0 0 150px; width: 150px; }
+.output .fname { flex: 1 1 auto; min-width: 0; font-family: var(--mono); }
+.output .val { width: 82px; flex: 0 0 82px; text-align: right; }
+.output .drop { border: 0; background: none; color: var(--dim); padding: 2px 8px; font-size: 16px; line-height: 1; }
+.output .drop:hover { color: var(--bad); background: none; }
+.plan { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 12px; align-items: baseline; font-size: 12px; margin-top: 8px; }
+.plan .file { font-family: var(--mono); word-break: break-all; }
+.plan .dim { text-align: right; font-family: var(--mono); }
+
+/* ----------------------------------------------------------------- batch */
+table.grid tr.sub td { background: var(--field); padding-left: 32px; }
+table.grid td .state { min-width: 64px; text-align: center; }
+.batchnote { max-width: 60ch; }
+
+/* --------------------------------------------------------- arrange dialog */
+.arrange { width: min(1180px, 96vw); }
+.arrange .modal-body { padding: 0; height: min(64vh, 640px); overflow: hidden; }
+.arrange canvas { width: 100%; height: 100%; cursor: grab; background: var(--canvas); touch-action: none; }
+.arrange canvas.moving { cursor: grabbing; }
+button.small.turn { font-size: 17px; line-height: 1; padding: 1px 8px 3px; }
+
+/* Patch: the specks found, pictures cut from one sheet the server draws */
+.dustgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; max-height: 372px; overflow-y: auto; margin: 8px 0; }
+.dustgrid:empty { display: none; }
+.dustgrid div { aspect-ratio: 1; border-radius: 3px; cursor: pointer; background-repeat: no-repeat; outline: 1px solid var(--line); }
+.dustgrid div:hover { outline: 2px solid #ff9d2e; outline-offset: -1px; }
+.dustgrid div.out { opacity: .28; }

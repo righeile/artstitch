@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ArtStitch by RíEile</title>
+<link rel="stylesheet" href="/static/labkit.css">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">Art<span>Stitch</span> <small>by RíEile</small></div>
+  <span class="divider"></span>
+  <span id="setLabel" class="mono dim">no set open</span>
+  <span class="spacer"></span>
+  <span id="busy" class="spinner hidden"></span>
+  <span id="toast" class="status hidden"></span>
+</header>
+
+<main>
+<div class="shell">
+
+  <nav class="rail" id="rail">
+    <button data-page="scans" class="on"><span class="step">1</span>Scans</button>
+    <button data-page="stitch"><span class="step">2</span>Stitch</button>
+    <button data-page="straighten"><span class="step">3</span>Straighten &amp; crop</button>
+    <button data-page="patch"><span class="step">4</span>Patch</button>
+    <button data-page="colour"><span class="step">5</span>Color</button>
+    <button data-page="export"><span class="step">6</span>Export</button>
+    <div class="divider" style="margin:8px 0"></div>
+    <button data-page="batch"><span class="step">&#8734;</span>Batch</button>
+    <p class="sidebar-note">One artwork: work down the list. Many artworks: Batch does all but 4 for a whole folder.</p>
+  </nav>
+
+  <div>
+
+  <!-- ============================================================ 1. Scans -->
+  <section class="page active" id="page-scans">
+    <h2 class="page-title">Scans</h2>
+    <p class="page-hint">Point this at the folder your scanner wrote. The scans of one artwork are found by
+      name &mdash; <span class="mono">name</span>, <span class="mono">name 1</span>, <span class="mono">name 2</span>
+      &hellip; &mdash; and nothing is moved or modified.</p>
+
+    <div class="panel">
+      <div class="sec-title">Folder of scans</div>
+      <div id="scanPick"></div>
+      <div class="row wrap" style="margin-top:10px">
+        <label class="chk"><input type="checkbox" id="scanRecursive"> include subfolders</label>
+        <label class="chk"><input type="checkbox" id="scanAll"> also PNG and JPEG</label>
+        <span class="spacer"></span>
+        <button class="ghost" id="btnScanFiles">Choose files by hand&hellip;</button>
+        <button class="ghost" id="btnLoadSession">Open a saved session&hellip;</button>
+        <button class="primary" id="btnScan">Find sets</button>
+      </div>
+      <p class="hint">Files that are much larger than the others of their name are taken for an earlier
+        result and left unchecked. Anything can be checked by hand.</p>
+    </div>
+
+    <div id="setList"></div>
+  </section>
+
+  <!-- =========================================================== 2. Stitch -->
+  <section class="page" id="page-stitch">
+    <h2 class="page-title">Stitch</h2>
+    <p class="page-hint">Every pair of scans is searched for where they overlap, rotation included; the
+      scans are then matched to each other as closely as a flatbed allows and cut apart along the
+      path where they already agree, so nothing is blended and nothing is softened.</p>
+
+    <div class="panel">
+      <div class="row wrap">
+        <label class="row">Set name <input type="text" id="setName" style="width:220px"></label>
+        <label class="row">Rotation search &plusmn;
+          <input type="number" id="maxDeg" class="mini" style="width:64px" min="0" max="45" step="0.5" value="3"> &deg;</label>
+        <label class="row">Scanned at
+          <input type="number" id="dpiIn" class="mini" style="width:78px" min="1" step="1" placeholder="from file"> dpi</label>
+        <span class="spacer"></span>
+        <button class="ghost" id="btnArrange">Place scans by hand&hellip;</button>
+        <button class="primary" id="btnStitch">Stitch</button>
+      </div>
+      <div id="stitchProgress"></div>
+    </div>
+
+    <div class="cols view">
+      <div>
+        <div class="row wrap viewbar">
+          <button class="small ghost" data-zoom="fit" data-view="stitch">Fit</button>
+          <button class="small ghost" data-zoom="one" data-view="stitch">100 %</button>
+          <label class="chk"><input type="checkbox" id="ovSeams" checked> seams</label>
+          <label class="chk"><input type="checkbox" id="ovOutlines"> scans</label>
+          <span class="spacer"></span>
+          <span class="dim mono" id="zoomStitch"></span>
+        </div>
+        <div class="viewer" id="viewStitch"><div class="empty">Stitch the set to see it here.</div></div>
+      </div>
+      <div>
+        <div class="panel"><div class="sec-title">Checks</div><div id="qcList"><p class="dim">Nothing yet.</p></div></div>
+        <div class="panel"><div class="sec-title">Scans</div><div id="poseTable"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================== 3. Straighten & crop -->
+  <section class="page" id="page-straighten">
+    <h2 class="page-title">Straighten &amp; crop</h2>
+    <p class="page-hint">The paper edges are found from the scanner lid showing around the sheet. Where there
+      are none, or they are not to be trusted, set the angle by hand &mdash; type it, drag the slider, or
+      draw a line along something that ought to be level. The crop is the largest rectangle that stays
+      inside the sheet; drag it to change it.</p>
+
+    <div class="panel">
+      <div class="row wrap">
+        <button class="primary" id="btnEdges">Find edges &amp; crop</button>
+        <span class="divider"></span>
+        <label class="row">Angle <input type="number" id="angleIn" class="mini" style="width:84px" step="0.01"> &deg;</label>
+        <input type="range" id="angleRange" min="-3" max="3" step="0.01" value="0" style="width:170px">
+        <button class="small" id="btnAngle">Apply angle</button>
+        <button class="small ghost" id="btnLevel">Draw a level line</button>
+        <span class="divider"></span>
+        <label class="row">Keep <input type="number" id="insetIn" class="mini" style="width:58px" min="0" step="1" value="12"> px clear of the edge</label>
+        <button class="small" id="btnAutoCrop">Auto crop</button>
+        <button class="small ghost" id="btnCropAll">Whole sheet</button>
+      </div>
+      <div id="straightenProgress"></div>
+    </div>
+
+    <div class="cols view">
+      <div>
+        <div class="row wrap viewbar">
+          <button class="small ghost" data-zoom="fit" data-view="plane">Fit</button>
+          <button class="small ghost" data-zoom="one" data-view="plane">100 %</button>
+          <label class="chk"><input type="checkbox" id="ovGrid"> guide grid</label>
+          <span class="divider"></span>
+          <button class="small turn" id="btnTurnL" title="Turn the picture 90° counterclockwise (whole pixels: nothing is resampled)">&#x21BA;</button>
+          <button class="small turn" id="btnTurnR" title="Turn the picture 90° clockwise (whole pixels: nothing is resampled)">&#x21BB;</button>
+          <span class="spacer"></span>
+          <span class="dim mono" id="zoomPlane"></span>
+        </div>
+        <div class="viewer" id="viewPlane"><div class="empty">Stitch the set first.</div></div>
+      </div>
+      <div>
+        <div class="panel"><div class="sec-title">Result</div><div id="geomInfo"><p class="dim">Nothing yet.</p></div></div>
+        <div class="panel"><div class="sec-title">Paper edges found</div><div id="edgeTable"></div></div>
+        <div class="panel">
+          <div class="sec-title">Crop (px of the straightened sheet)</div>
+          <div class="cropgrid">
+            <label>left <input type="number" id="cropX0" class="mini"></label>
+            <label>top <input type="number" id="cropY0" class="mini"></label>
+            <label>right <input type="number" id="cropX1" class="mini"></label>
+            <label>bottom <input type="number" id="cropY1" class="mini"></label>
+          </div>
+          <div class="row" style="margin-top:8px"><span class="spacer"></span><button class="small" id="btnCropSet">Set crop</button></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================= 4. Patch -->
+  <section class="page" id="page-patch">
+    <h2 class="page-title">Patch</h2>
+    <p class="page-hint">Paint out dust, specks and hairs: click on a speck, drag along a hair. Each stroke is filled
+      with a copy of the picture from close by, matched in color and brightness to where it goes, so the grain of
+      the paper and the paint carries on and nothing is blurred; a long stroke is filled in stretches, each copied
+      from a place of its own. Hover over a patch to see where its copies came from (yellow); drag one somewhere
+      better if the patch shows. Option-click a patch to take it out.</p>
+
+    <div class="cols view">
+      <div>
+        <div class="row wrap viewbar">
+          <button class="small ghost" data-zoom="fit" data-view="patch">Fit</button>
+          <button class="small ghost" data-zoom="one" data-view="patch">100 %</button>
+          <label class="row">brush <input type="number" id="brushIn" class="mini" style="width:64px" min="1" max="300" step="1"> px</label>
+          <label class="chk"><input type="checkbox" id="patchOutlines" checked> outlines</label>
+          <span class="spacer"></span>
+          <span class="dim mono" id="zoomPatch"></span>
+        </div>
+        <div class="viewer" id="viewPatch"><div class="empty">Stitch the set first.</div></div>
+      </div>
+      <div>
+        <div class="panel">
+          <div class="sec-title">Dust</div>
+          <div class="row">
+            <button class="small primary" id="btnDust">Find dust</button>
+            <span class="spacer"></span>
+            <button class="small" id="btnDustPatch" disabled>Patch them</button>
+          </div>
+          <div id="dustProgress"></div>
+          <div id="dustMinRow" hidden>
+            <label class="row">hairs from <input type="range" id="dustHair" min="8" max="30" step="1" value="12" style="flex:1">
+              <span class="mono" id="dustHairOut"></span>&times; the grain</label>
+            <label class="row">specks from <input type="range" id="dustMin" min="10" max="30" step="1" value="12" style="flex:1">
+              <span class="mono" id="dustMinOut"></span>&times; the grain</label>
+          </div>
+          <div id="dustInfo"></div>
+          <div class="row wrap" id="dustPick" hidden>
+            <span class="dim">select</span>
+            <button class="small ghost" data-dust="all">All</button>
+            <button class="small ghost" data-dust="none">None</button>
+            <button class="small ghost" data-dust="hair">Hairs</button>
+            <button class="small ghost" data-dust="speck">Specks</button>
+          </div>
+          <div class="dustgrid" id="dustGrid"></div>
+          <p class="hint">Hairs, then specks and lint, that stand out from the grain round them, strongest first,
+            circled in the picture. Paint, too, can stand out that much: click a picture to leave it out, double-click
+            to see it where it is. A hair is a line thinner than a brush paints with the same paint either side; round
+            marks over 20 px across start left out, as most are paint. A hair's faint tail may be left: drag along
+            it.</p>
+        </div>
+        <div class="panel">
+          <div class="sec-title">Patches</div>
+          <div id="patchInfo"><p class="dim">None yet.</p></div>
+          <div class="row">
+            <button class="small" id="btnPatchUndo">Undo</button>
+            <span class="spacer"></span>
+            <button class="small danger" id="btnPatchClear">Remove all</button>
+          </div>
+          <p class="hint">The brush is in pixels of the full-size picture: [ and ] make it smaller and larger.
+            &#8984;Z undoes the last change. Hold the space bar and drag to move the picture. Patches are saved
+            with the session and go into every export; stitching again removes them.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ 5. Color -->
+  <section class="page" id="page-colour">
+    <h2 class="page-title">Color</h2>
+    <p class="page-hint">Levels and curves per channel, then white balance, contrast, hue, saturation and
+      lightness. What you see is what is saved: the preview and the export run the same code. The
+      histogram is that of the picture before these changes.</p>
+
+    <div class="cols view">
+      <div>
+        <div class="row wrap viewbar">
+          <button class="small ghost" data-zoom="fit" data-view="result">Fit</button>
+          <button class="small ghost" data-zoom="one" data-view="result">100 %</button>
+          <label class="chk"><input type="checkbox" id="showRaw"> show the original</label>
+          <span class="spacer"></span>
+          <span class="dim mono" id="zoomResult"></span>
+        </div>
+        <div class="viewer" id="viewResult"><div class="empty">Stitch the set first.</div></div>
+      </div>
+
+      <div>
+        <div class="panel">
+          <div class="row wrap">
+            <div class="seg" id="chanSeg">
+              <button data-ch="rgb" class="active">RGB</button><button data-ch="r">R</button>
+              <button data-ch="g">G</button><button data-ch="b">B</button>
+            </div>
+            <span class="spacer"></span>
+            <button class="small" id="btnAutoAll" title="One black and one white point for all channels">Auto</button>
+            <button class="small" id="btnAutoEach" title="Black and white point of each channel on its own">Auto per channel</button>
+          </div>
+
+          <div class="sec-title">Levels</div>
+          <canvas id="histCanvas" width="264" height="84"></canvas>
+          <div class="levelrow">
+            <label>black <input type="number" id="lvBlack" class="mini" min="0" max="254" step="1"></label>
+            <label>gamma <input type="number" id="lvGamma" class="mini" min="0.1" max="9.99" step="0.01"></label>
+            <label>white <input type="number" id="lvWhite" class="mini" min="1" max="255" step="1"></label>
+          </div>
+          <p class="hint" id="lvNote" hidden></p>
+          <div class="row wrap">
+            <span class="dim">pick from the picture:</span>
+            <button class="small ghost" data-pick="black">black</button>
+            <button class="small ghost" data-pick="grey">gray</button>
+            <button class="small ghost" data-pick="white">white</button>
+          </div>
+
+          <div class="sec-title">Curve</div>
+          <canvas id="curveCanvas" width="264" height="264"></canvas>
+          <p class="hint">Click to add a point, drag to move it, double-click to remove it.</p>
+
+          <div class="sec-title">Tone and color</div>
+          <div id="sliders"></div>
+
+          <div class="sec-title">Saved settings</div>
+          <div class="row">
+            <select id="colourSel" style="flex:1 1 auto"></select>
+            <button class="small" id="btnColourLoad">Use</button>
+            <button class="small danger" id="btnColourDel">Delete</button>
+          </div>
+          <div class="row">
+            <input type="text" id="colourName" placeholder="a name for the current settings">
+            <button class="small" id="btnColourSave">Save</button>
+          </div>
+          <div class="row"><span class="spacer"></span><button class="small ghost" id="btnColourReset">Reset everything</button></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =========================================================== 6. Export -->
+  <section class="page" id="page-export">
+    <h2 class="page-title">Export</h2>
+    <p class="page-hint">A preset is a list of files to make from one result &mdash; say a full-size TIFF, a
+      300 dpi PNG, a PNG under 10 MB and a JPEG &mdash; each with a file name of your own. The picture is
+      rendered once and every file is made from it. TIFFs are always lossless.</p>
+
+    <div class="cols two">
+      <div class="panel">
+        <div class="sec-title">Preset</div>
+        <div class="row wrap">
+          <select id="presetSel" style="flex:1 1 140px"></select>
+          <button class="small danger" id="btnPresetDel">Delete</button>
+        </div>
+        <div class="row">
+          <input type="text" id="presetName" placeholder="preset name">
+          <button class="small primary" id="btnPresetSave">Save</button>
+          <button class="small" id="btnPresetNew">Save as new</button>
+        </div>
+        <div class="row"><label style="flex:0 0 auto">Save into</label><input type="text" id="outFolder"
+          placeholder="stitched  (beside the scans)  or a full path"></div>
+        <div class="row"><label style="flex:0 0 auto">If a file already exists</label>
+          <select id="overwriteSel" style="flex:1 1 auto"></select></div>
+
+        <div class="sec-title">Files to make</div>
+        <div id="outputs"></div>
+        <div class="row"><button class="small" id="btnAddOutput">+ another file</button>
+          <span class="spacer"></span><span class="dim" id="placeholderHelp"></span></div>
+      </div>
+
+      <div class="panel">
+        <div class="sec-title">This result</div>
+        <div id="planHead" class="dim">Stitch the set first.</div>
+        <div id="planList"></div>
+        <div class="row" style="margin-top:12px">
+          <span class="spacer"></span>
+          <button class="ghost" id="btnSaveSession">Save the session&hellip;</button>
+          <button class="primary" id="btnExport">Export</button>
+        </div>
+        <div id="exportProgress"></div>
+        <div id="exportResult"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ 7. Batch -->
+  <section class="page" id="page-batch">
+    <h2 class="page-title">Batch</h2>
+    <p class="page-hint">A folder with many artworks in it: every set is stitched, straightened and cropped
+      by the rules of the Straighten page, colored as chosen, and saved with a preset &mdash; unattended.
+      A set that goes wrong is reported and the rest carry on; one that finishes with something worth a
+      look is marked <b>review</b>, and opens in the editor exactly as the batch left it.</p>
+
+    <div class="panel">
+      <div class="sec-title">Folder of scans</div>
+      <div id="batchPick"></div>
+      <div class="row wrap" style="margin-top:10px">
+        <label class="chk"><input type="checkbox" id="batchRecursive"> include subfolders</label>
+        <label class="chk"><input type="checkbox" id="batchAll"> also PNG and JPEG</label>
+        <span class="spacer"></span>
+        <button class="primary" id="btnBatchScan">Find sets</button>
+      </div>
+    </div>
+
+    <div class="panel hidden" id="batchSetup">
+      <div class="row wrap">
+        <label class="row">Save with <select id="batchPreset"></select></label>
+        <label class="row">Color <select id="batchColour"></select></label>
+        <span class="spacer"></span>
+        <button class="danger hidden" id="btnBatchStop">Stop after this set</button>
+        <button class="primary" id="btnBatchRun">Run the batch</button>
+      </div>
+      <p class="hint" id="batchNote"></p>
+      <div id="batchProgress"></div>
+    </div>
+
+    <div class="panel hidden" id="batchTable"></div>
+  </section>
+
+  </div>
+</div>
+</main>
+
+<script src="/static/labkit.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
