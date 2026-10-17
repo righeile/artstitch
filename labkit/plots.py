@@ -1,6 +1,9 @@
 """Figures in the lab's publication style.
 
-The house style: 2 x 1.5 inch panels, Arial, 7/8/9 pt, no top or right spine,
+The house style, taken from the lab's own ephys module
+(``working_stuff/Processing Scripts/voltage_clamp_processing.py``): a value
+axis 1.2 in long and 0.25 in to a category (:data:`AXES_LENGTH_MM`,
+:attr:`PlotSpec.bar_mm`), Arial, 7/8/9 pt, no top or right spine,
 transparent background, and ``svg.fonttype='none'`` so every label is still
 live text in Illustrator.  It is *opt-in*: importing this module leaves
 ``matplotlib.rcParams`` alone, because changing them at import would silently
@@ -57,7 +60,8 @@ __all__ = [
     "annotate_p", "group_plot", "xy_plot", "trace_plot",
     "PlotSpec", "figure_from_spec", "comparisons_for", "annotate_from_spec",
     "PALETTES", "FONTS", "VECTOR_TEXT", "TIGHT_CROP",
-    "MM", "jitter",
+    "MM", "jitter", "AXES_LENGTH_MM", "BOX_LW",
+    "series_names", "order_series", "reorder_data",
 ]
 
 SMALL, MEDIUM, LARGE = 7, 8, 9
@@ -67,6 +71,27 @@ SMALL, MEDIUM, LARGE = 7, 8, 9
 #: asks for a bar of a given printed width: the two have to be the same number
 #: or the bar comes out the wrong size, silently and by a constant factor.
 BAR_WIDTH = 0.62
+
+#: Every line of a box -- edge, whiskers, caps, median.  One weight, which is
+#: what seaborn's ``linewidth=0.7`` gives the lab notebook's boxes.
+BOX_LW = 0.7
+
+#: How long the value axis is, in mm -- the data area's height on an upright
+#: plot, its width on a turned one.  A bar's height is read against its
+#: neighbours and against the next panel, so it has to be the same length on
+#: the page whatever the figure is.  Stretched to the figure instead, a plot of
+#: two groups and a plot of seven carry two y scales and nothing says so.
+#:
+#: 30.48 mm is 1.2 in, the number the lab's own ephys notebook draws at
+#: (``figsize=(0.25*18, 1.2)`` in ``ClC-7 2025.ipynb``, via
+#: ``working_stuff/Processing Scripts/voltage_clamp_processing.py``).  Set on
+#: the figures rather than derived.  ``PlotSpec.panel_height_mm`` is the step
+#: family's panel and keeps its own 38.1 -- a sweep of fourteen voltage steps
+#: is not a bar chart and does not read short.
+#:
+#: ``PlotSpec.axes_height_mm``/``axes_width_mm`` override it.  The *category*
+#: axis is never pinned from here -- ``bar_mm`` sizes that one.
+AXES_LENGTH_MM = 30.48
 
 #: How to ask matplotlib's boxplot and violinplot to lie on their side.
 #: ``vert=False`` was deprecated in 3.11 for ``orientation='horizontal'``,
@@ -164,7 +189,7 @@ FONTS: dict[str, list[str]] = {
 
 #: The lab's conventions, as an explicit dict rather than an import-time global.
 PUBLICATION_RCPARAMS: dict = {
-    "lines.linewidth": 0.5,
+    "lines.linewidth": 0.2,
     "lines.markersize": 1,
     "lines.color": theme.PRINT["ink"],
     "axes.prop_cycle": mpl.cycler(color=theme.SERIES),
@@ -177,8 +202,10 @@ PUBLICATION_RCPARAMS: dict = {
 
     # Tight furniture.  matplotlib's gaps are sized for a six-inch figure on a
     # screen; on an 85 mm column they cost more width than some of the data.
-    # A 10 pt gap under a 9 pt title is a blank line, not a gap.
-    "axes.titlepad": 3,
+    # `titlepad` is the lab notebook's 10 rather than the 3 that was here: a
+    # panel title in these figures is a label standing above the plot, not a
+    # caption sitting on it.
+    "axes.titlepad": 10,
     "axes.labelpad": 2,
     "xtick.major.pad": 2,
     "ytick.major.pad": 2,
@@ -204,7 +231,7 @@ PUBLICATION_RCPARAMS: dict = {
     "legend.markerscale": 1,
     "legend.scatterpoints": 1,
     "legend.numpoints": 1,
-    "figure.figsize": (2, 1.5),
+    "figure.figsize": (2, 2),
     "xtick.color": theme.PRINT["ink"],
     "ytick.color": theme.PRINT["ink"],
     "xtick.labelcolor": theme.PRINT["ink"],
@@ -636,7 +663,7 @@ def group_plot(
     title: str = "",
     order: Sequence[str] | None = None,
     bar_width: float = BAR_WIDTH,
-    point_size: float = 3.2,
+    point_size: float = 2.5,
     show_n: bool = True,
     log_y: bool = False,
     zero_line: bool = True,
@@ -664,7 +691,7 @@ def group_plot(
         round to the x axis and ``xlabel`` follows the groups to the y one, so
         a panel keeps its labels when it is turned.  It is what long group
         names want -- ``R201C`` and ``rescue`` have a whole column to
-        themselves instead of 5.65 mm of tick.
+        themselves instead of 6.35 mm of tick.
 
     Returns ``(ax, positions)`` -- the positions being ``{label: x}``, ready to
     hand to :func:`annotate_p`.
@@ -729,19 +756,27 @@ def group_plot(
                             elinewidth=0.9, capthick=0.9,
                             ecolor=theme.PRINT["ink"], zorder=4)
         elif kind == "box":
+            # Black, like every other box in these apps (`PlotStyle.box_edge_colour`
+            # in pHerret, which is where the house style was settled).  A box is
+            # line art and line art is black; the series colour lives on the
+            # points drawn on top, which is the only place it has to be read.
+            # Drawn in the colour instead, the same data gives a different
+            # picture depending on which app drew it -- and two such panels end
+            # up side by side in one figure.
+            ink = theme.PRINT["ink"]
             box = ax.boxplot([values], positions=[x], widths=bar_width,
                              **(_SIDEWAYS if horizontal else {}),
                              patch_artist=True, showfliers=False, zorder=2,
-                             medianprops={"color": theme.PRINT["ink"], "lw": 1.0},
-                             whiskerprops={"color": colour, "lw": 0.8},
-                             capprops={"color": colour, "lw": 0.8})
+                             medianprops={"color": ink, "lw": BOX_LW},
+                             whiskerprops={"color": ink, "lw": BOX_LW},
+                             capprops={"color": ink, "lw": BOX_LW})
             for patch in box["boxes"]:
                 # Outline only.  A filled box competes with the points drawn on
                 # top of it for the same ink, and the points are the reason the
                 # figure exists -- with three or four animals a side, what the
                 # reader needs to see is where each one fell, not a tinted
                 # rectangle in front of them.
-                patch.set(facecolor="none", edgecolor=colour, linewidth=0.9)
+                patch.set(facecolor="none", edgecolor=ink, linewidth=BOX_LW)
         elif kind == "violin":
             if values.size >= 3 and np.ptp(values) > 0:
                 parts = ax.violinplot([values], positions=[x], widths=bar_width,
@@ -757,12 +792,17 @@ def group_plot(
                             capsize=2.0, capthick=0.9,
                             ecolor=theme.PRINT["ink"], zorder=4)
         else:                                            # 'none': the center only
+            # The line is the summary shape, so it carries the series colour the
+            # way a bar's fill or a violin's body does.  The error bar does not:
+            # it is a whisker, and whiskers are black in all four kinds -- it
+            # was the series colour here alone, which made one plot kind quietly
+            # unlike its neighbours.
             ax.plot(*_pair([x - bar_width / 2.4, x + bar_width / 2.4], [height] * 2),
                     color=colour, lw=1.4, zorder=4, solid_capstyle="butt")
             if err:
                 ax.errorbar(*_pair(x, height), **{f"{val}err": err},
-                            fmt="none", elinewidth=0.9,
-                            capsize=2.5, capthick=0.9, ecolor=colour, zorder=4)
+                            fmt="none", elinewidth=0.9, capsize=2.5, capthick=0.9,
+                            ecolor=theme.PRINT["ink"], zorder=4)
 
     # --- the points, which are the point ----------------------------------
     offsets: dict[str, np.ndarray] = {}
@@ -777,9 +817,14 @@ def group_plot(
             else:
                 dx = jitter(values.size, width, seed=seed + i * 97)
             offsets[label] = positions[label] + dx
+            # Filled in the group's colour with a hairline white halo, which
+            # is what separates two dots that land on each other -- the lab
+            # notebook's `edgecolor='w', linewidth=0.25`.  The box behind them
+            # is an outline, so a filled dot covers nothing.
             ax.plot(*_pair(offsets[label], values), "o", ms=point_size,
-                    mfc=theme.PRINT["point_face"], mec=theme.PRINT["point_edge"],
-                    mew=0.7, lw=0, zorder=6, clip_on=False)
+                    mfc=colours[i % len(colours)],
+                    mec=theme.PRINT["point_edge"],
+                    mew=0.25, lw=0, zorder=6, clip_on=False)
 
     # --- join the pairs ---------------------------------------------------
     if paired and points:
@@ -1227,7 +1272,7 @@ def _fmt(value: float) -> str:
 def save_figure(
     figure,
     path: str | os.PathLike,
-    formats: tuple[str, ...] = ("png", "svg"),
+    formats: tuple[str, ...] = ("png", "pdf"),
     dpi: int = 300,
     transparent: bool = True,
 ) -> list[Path]:
@@ -1236,6 +1281,13 @@ def save_figure(
     Always both a raster to look at and a vector to edit, because the figure
     that goes in the paper is never the first one produced.  Never depends on
     the current working directory and never touches the pyplot global figure.
+
+    The vector one is PDF.  It is what journals ask for, it is one file rather
+    than a file plus whatever fonts the reader happens to have, and the text
+    stays text: ``pdf.fonttype: 42`` in the rcParams above embeds the TrueType
+    outlines instead of drawing the glyphs as paths, so a label can still be
+    edited in Illustrator -- the same promise ``svg.fonttype: 'none'`` makes
+    for SVG.  Pass ``formats=("png", "svg")`` where an SVG is wanted.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1270,6 +1322,13 @@ class PlotSpec:
     #: names it mentions.  "KO is this red" is a decision about a paper, not
     #: about a palette, and it has to survive a figure gaining a group.
     colours: dict[str, str] = field(default_factory=dict)
+    #: The sequence the conditions are drawn in, ``["WT", "P716L", "Y715C"]``.
+    #: Empty leaves them in the order the data arrived, which for most callers
+    #: is alphabetical -- and alphabetical puts the wild type after the mutants.
+    #: Named by name, like :attr:`colours`, and for the same reason: an order
+    #: has to survive the figure gaining a condition.  :func:`order_series` says
+    #: what happens to a condition this does not mention.
+    order: list[str] = field(default_factory=list)
     width_mm: float = 85.0         # single column
     height_mm: float = 0.0         # 0 = derive from width
     #: The plotting area of one panel, labels *outside* it -- see
@@ -1282,16 +1341,18 @@ class PlotSpec:
     #: compares across a figure, and the thing that goes wrong when a panel is
     #: instead stretched to fill a column.
     #:
-    #: 3.5 mm is where a category is 5.65 mm wide, which is the first width
-    #: that clears the ``(n = 5)`` under a group name (5.33 mm at 7 pt); at
-    #: 3 mm those collide.  Two groups then make a panel 21 mm wide, so four
-    #: of them stand in one journal column.  Names longer than about four
-    #: characters -- ``R201C``, ``rescue`` -- want 5 mm or the x rotation.
+    #: 3.94 mm puts a category at 6.35 mm, which is 0.25 in -- the pitch the
+    #: lab's ephys notebook draws at (``figsize=(0.25*18, 1.2)``), so a panel
+    #: from an app and a panel from that notebook sit side by side at one
+    #: scale.  It also clears the ``(n = 5)`` under a group name (5.33 mm at
+    #: 7 pt), which 3 mm did not.  Two groups make a panel 12.7 mm wide, so
+    #: six stand in one journal column.  Names longer than about five
+    #: characters -- ``rescue`` -- still want the x rotation.
     #:
     #: ``width_mm`` becomes a ceiling rather than the width.  0 hands the
     #: width back to it; ``axes_width_mm``, being explicit, wins over both.
     #: ``'xy'`` and ``'trace'`` have no categories and ignore this.
-    bar_mm: float = 3.5
+    bar_mm: float = 3.94
     #: Turn the panel a quarter turn: groups down the y axis, bars reaching
     #: right, first group at the top.  Everything else is the same figure --
     #: the value label follows the values to the x axis, ``log_y`` and the
@@ -1306,7 +1367,7 @@ class PlotSpec:
     #: panel grows with the groups, which is the point of turning it.
     #:
     #: Which is what long names want: ``R201C`` and ``rescue`` get a whole
-    #: column to themselves instead of the 5.65 mm of tick a 3.5 mm bar
+    #: column to themselves instead of the 6.35 mm of tick a 3.94 mm bar
     #: leaves them.  ``'xy'`` and ``'trace'`` have no categories and ignore it.
     horizontal: bool = False
     font_pt: float = 8.0
@@ -1356,7 +1417,7 @@ class PlotSpec:
     #: Join the points of a curve at all.
     join: bool = True
     #: Size of the individual points on a group plot.
-    point_size: float = 3.2
+    point_size: float = 2.5
 
     # --- step families (one panel per group) ------------------------------
     #: Size of each panel, in mm; the figure is as many of them as there are.
@@ -1460,6 +1521,55 @@ def series_names(data) -> list[str]:
     if isinstance(data, dict):
         return [str(k) for k in data]
     return [str(d.get("label", "") if isinstance(d, dict) else d) for d in data]
+
+
+def order_series(names, order) -> list[str]:
+    """``names`` put in the sequence ``order`` asks for, keeping the strangers.
+
+    The sequence a reader needs is almost never alphabetical: ``WT``, ``P716L``,
+    ``Y715C`` is the order of the mutation along the protein, and sorted() puts
+    the wild type last.  So the order is the user's to state, and this is the one
+    rule that applies it everywhere -- the figure, the colors, the brackets and
+    the legend all read the same list.
+
+    A name ``order`` does not mention keeps its place *after* the ones that are
+    mentioned, rather than disappearing: a saved order outlives the dataset it
+    was typed for, and the commonest thing to happen next is a new condition.
+    Dropping it silently would be a figure missing a genotype that nobody asked
+    to hide.  A name in ``order`` that is not in the data is simply skipped.
+    """
+    names = [str(n) for n in names]
+    if not order:
+        return names
+    want = [str(o) for o in order]
+    seen = set()
+    first = [n for n in want if n in names and not (n in seen or seen.add(n))]
+    return first + [n for n in names if n not in seen]
+
+
+def reorder_data(data, order):
+    """``data`` in the sequence :func:`order_series` gives, whatever shape it is.
+
+    ``{label: values}`` for the group kinds and ``[{'label': ...}, ...]`` for
+    the curve kinds, which is every shape :func:`figure_from_spec` takes.  Doing
+    it to the data once, before anything reads it, is what keeps the order out
+    of the drawing code: the colors are assigned by walking the series
+    (:func:`colours_for`), the positions by drawing them, and the brackets by
+    reading the positions back, so all three follow a reordered input without
+    knowing an order exists.  Passing an order to the drawing instead would have
+    left :func:`colours_for` walking the old sequence and quietly handed every
+    series its neighbour's color.
+    """
+    if not order:
+        return data
+    want = order_series(series_names(data), order)
+    if isinstance(data, dict):
+        return {k: data[k] for k in want if k in data}
+    at = {}
+    for item in data:
+        at.setdefault(str(item.get("label", "") if isinstance(item, dict) else item),
+                      []).append(item)
+    return [item for name in want for item in at.get(name, [])]
 
 
 def colours_for(spec: "PlotSpec | dict", data) -> list[str]:
@@ -1726,6 +1836,9 @@ def figure_from_spec(
     annotated, or ``None``.
     """
     spec = spec if isinstance(spec, PlotSpec) else PlotSpec.from_dict(spec)
+    # First, so that everything below -- the colors, the drawing order, the
+    # positions the brackets are hung from -- reads one sequence.
+    data = reorder_data(data, spec.order)
     palette = colours_for(spec, data)
     table = None
 
@@ -1781,6 +1894,17 @@ def figure_from_spec(
         across = 1 if sideways else 0
         want = [spec.axes_width_mm, spec.axes_height_mm]
         ceiling = spec.height_mm if sideways else spec.width_mm
+        # The value axis is a fixed length unless somebody typed one, for the
+        # reason in AXES_LENGTH_MM.  'xy' and 'trace' have no categories, so
+        # `across` is only ever the orientation there: the vertical axis.
+        #
+        # ``height_mm`` is a typed *figure* height and outranks the default --
+        # it defaults to 0, so a number there was asked for.  ``width_mm`` is
+        # not the same thing: it is always set, and documented as a column
+        # ceiling rather than a target, so a turned panel still gets the pin.
+        typed = spec.height_mm > 0 if not sideways else False
+        if not want[1 - across] and not typed:
+            want[1 - across] = AXES_LENGTH_MM
         if not want[across] and spec.bar_mm > 0 and spec.kind not in ("xy", "trace"):
             # The categories span that axis, so one bar is BAR_WIDTH of
             # (span / n).  Read the span rather than counting the groups: it

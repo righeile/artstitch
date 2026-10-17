@@ -87,6 +87,11 @@ def stars(p_value: float, show_ns: bool = True) -> str:
     """
     if p_value is None or not np.isfinite(p_value):
         return ""
+    # Five, not four: the lab's own ladder in `voltage_clamp_processing.py`
+    # runs ***** below 1e-5, and a figure that stops at **** reads as a
+    # weaker result than the same data drawn in the notebook.
+    if p_value < 0.00001:
+        return "*****"
     if p_value < 0.0001:
         return "****"
     if p_value < 0.001:

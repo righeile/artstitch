@@ -291,6 +291,12 @@
     wheel(e) {
       e.preventDefault();
       if (!this.info) return;
+      if (!(e.ctrlKey || e.metaKey)) {      // two-finger pan; pinch/ctrl zooms
+        const r = this.ov.getBoundingClientRect(), k = this.W / r.width;
+        this.cx += e.deltaX * k / this.z; this.cy += e.deltaY * k / this.z;
+        this.limit(); this.changed();
+        return;
+      }
       const p = this.point(e);
       this.zoomAt(Math.exp(-e.deltaY * (e.ctrlKey ? 0.012 : 0.0016)), p.sx, p.sy);
     }
@@ -538,6 +544,11 @@
     cv.addEventListener('pointerup', () => { drag = null; cv.classList.remove('moving'); });
     cv.addEventListener('wheel', (e) => {
       e.preventDefault();
+      if (!(e.ctrlKey || e.metaKey)) {      // two-finger pan; pinch/ctrl zooms
+        const r = cv.getBoundingClientRect(), k = cv.width / r.width;
+        cx += e.deltaX * k / z; cy += e.deltaY * k / z; draw();
+        return;
+      }
       const m = at(e), f = Math.exp(-e.deltaY * 0.0016);
       z = clamp(z * f, 0.0005, 0.2); cx = m.x - (m.sx - cv.width / 2) / z; cy = m.y - (m.sy - cv.height / 2) / z; draw();
     }, { passive: false });

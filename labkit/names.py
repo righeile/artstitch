@@ -37,6 +37,8 @@ from typing import Dict, List, Optional, Sequence
 
 import pandas as pd
 
+from .plate import harmony_parts
+
 __all__ = [
     "ROLES", "ROLE_HELP", "GROUPING_ROLES", "GROUP_PREFERENCE",
     "delimiters", "split_name", "suggest_roles", "name_schemes", "parse_names",
@@ -58,7 +60,8 @@ ROLE_HELP = {
     "ignore": "dropped — not carried into the table",
     "date": "acquisition date — can be used to match controls",
     "replicate": "biological replicate — can be used to match controls",
-    "dish": "dish / well — the unit that bootstrapping resamples within",
+    "dish": "dish / well — the unit that bootstrapping resamples within, "
+            "and where a plate layout reads the well from",
     "experiment": "experiment or stain name, e.g. 'lysosensor'",
     "variant": "genotype / mutant — one plot panel per value by default",
     "treatment": "drug or treatment — can define panels, or be matched on",
@@ -107,6 +110,8 @@ def _role_from_word(part: str) -> Optional[str]:
     return _ROLE_WORDS.get(m.group("word").lower()) if m else None
 _DATE_LIKE = re.compile(r"^(20\d{6}|\d{6})$")
 _INT_LIKE = re.compile(r"^\d{1,3}$")
+#: What `plate.harmony_parts` returns, recognized from the parts alone.
+_HARMONY_PARTS = re.compile(r"^[A-P]\d\d f\d+ p\d+ ch\d+ sk\d+ fk\d+ fl\d+$", re.I)
 
 
 #: How a `sep` spec naming more than one delimiter is written. All three forms
@@ -157,7 +162,14 @@ def split_name(name: str, sep: str = "_", also_whitespace: bool = False,
     spaces (`P716L 34.czi`), and ``split_trailing_digits`` separates a trailing
     number from a leading label (`Y715C10` becomes `["Y715C", "10"]`). Leave them
     off for underscore-separated names, where `dish1` should stay one part.
+
+    The one name that is not split on a delimiter is a plate reader's own
+    (`r02c01f03p01-ch1sk1fk1fl1`): it has none between its pieces, and a fixed
+    grammar instead. See `plate.harmony_parts`.
     """
+    plate_parts = harmony_parts(name)
+    if plate_parts:
+        return plate_parts
     stem = Path(str(name)).stem
     seps = delimiters(sep) + ([" "] if also_whitespace else [])
     parts = [stem]
@@ -203,6 +215,14 @@ def suggest_roles(parts: Sequence[str], all_parts: Optional[Sequence[Sequence[st
             varied.append(len(vals))
     else:
         varied = [2] * n
+
+    if _HARMONY_PARTS.match(" ".join(parts)):
+        # A plate reader's name says what each piece is. The well is the unit
+        # and the field is the field; a plane, a channel or a time step is only
+        # worth a column when the export holds more than one of it.
+        rest = ["other", "channel", "timepoint", "other", "other"]
+        return ["dish", "field"] + [r if varied[i + 2] > 1 else "ignore"
+                                    for i, r in enumerate(rest)]
 
     for i, p in enumerate(parts):
         if _DATE_LIKE.match(p):
@@ -415,9 +435,14 @@ def label_one(name: str, sep: str = "_") -> str:
     part that is not an index" -- drop anything that looks like a date, a bare
     number, or a word whose meaning is already known (`field`, `dish`), and take
     what is left.
+
+    A plate reader's name has no condition in it at all, so the label is the
+    well: six wells are six groups, where the stem would be one group per field.
     """
     stem = Path(str(name)).stem
     parts = split_name(stem, sep=sep)
+    if harmony_parts(stem):
+        return parts[0]
     keep = [p for p in parts
             if not _DATE_LIKE.match(p) and not _INT_LIKE.match(p)
             and not _role_from_word(p)]
@@ -472,5 +497,15 @@ if __name__ == "__main__":                                   # python -m labkit.
     stamp_groups(nogroup)
     assert list(nogroup["group"]) == ["0", "1"], \
         "nothing parsable leaves the placeholder standing"
+
+    # A plate reader's names: no delimiter, the well instead of a condition.
+    plate_names = [f"r{r:02d}c01f{f:02d}p01-ch1sk1fk1fl1.tiff" for r in (2, 5) for f in (1, 2)]
+    assert split_name(plate_names[0], sep="-") == \
+        ["B01", "f01", "p01", "ch1", "sk1", "fk1", "fl1"], "its own grammar, whatever the delimiter"
+    assert name_schemes(plate_names)[7]["suggested"] == \
+        ["dish", "field"] + ["ignore"] * 5, "one plane, one channel: neither is a column"
+    assert list(auto_meta(plate_names)["dish"]) == ["B01", "B01", "E01", "E01"]
+    assert label_one(plate_names[2]) == "E01", "the well, not one group per field"
+    assert auto_group_map(plate_names) == {}, "no condition in the name: the layout supplies it"
 
     print("labkit.names: all checks passed.")

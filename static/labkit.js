@@ -8,7 +8,9 @@
  *   LK.theme.toggle()                 dark <-> light, remembered
  *   LK.browse({...})                  the file dialog, in all of them
  *   LK.pathPicker(host, {...})        a path box with a Browse button
+ *   LK.hexBox(colorInput)             the well's hex code, typed or pasted
  *   LK.PlotControls(host, {...})      the plotting panel, in all of them
+ *   LK.plateEditor(host, {...})       a plate map: which wells got what
  *   LK.api(url, opts)                 fetch that throws the server's message
  *   LK.nameMatch(query)              a filter box, as a predicate over a name
  */
@@ -287,6 +289,8 @@
             onclick: () => here.parent && go(here.parent) }),
           pathBox,
           el('button', { class: 'ghost small', text: 'Go', onclick: () => go(pathBox.value) }),
+          el('button', { class: 'ghost small', text: '+ Folder',
+            title: 'Create a subfolder of the folder shown', onclick: () => newFolder() }),
         ]),
         el('div', { class: 'lk-recents', style: { paddingTop: '8px' } }, [crumbs]),
         recentRow,
@@ -319,6 +323,51 @@
         if (!picked.length) return;
         remember(here.path);
         close(opts.mode === 'files' ? picked : picked[0]);
+      }
+
+      /* Create a subfolder of the folder on screen.
+         An input in the folder list, not prompt(): the names it must not
+         collide with are the ones already listed beside it, and a modal on
+         top of a modal hides them.  (It also keeps working in the embedded
+         browsers that answer prompt() with null without asking anyone.)
+         Anything that repaints the column -- a click, the filter -- drops the
+         row, which is the same gesture as giving up on it. */
+      function newFolder() {
+        const open = dirsCol.querySelector('.lk-newname');
+        if (open) return open.focus();
+        const nameBox = el('input', {
+          type: 'text', class: 'lk-newname', spellcheck: 'false',
+          placeholder: 'name of the new folder',
+          onkeydown: (e) => {
+            if (e.key === 'Enter') create(nameBox.value);
+            // Escape dismisses the row, not the whole dialog, so it must not
+            // reach the document listener that closes it.
+            if (e.key === 'Escape') { e.stopPropagation(); row.remove(); footer(); }
+          },
+        });
+        const row = el('div', { class: 'lk-entry' }, [
+          el('span', { class: 'lk-glyph', text: '▸' }), nameBox,
+        ]);
+        dirsCol.insertBefore(row, dirsCol.children[1] || null);
+        nameBox.focus();
+        footNote.style.color = '';
+        footNote.textContent = 'Enter to create it in ' + here.path;
+      }
+
+      async function create(name) {
+        let made;
+        try {
+          made = await LK.api(opts.endpoint + '/mkdir', { body: { path: here.path, name } });
+        } catch (err) {
+          made = { error: err.message };
+        }
+        if (made.error) {
+          footNote.textContent = made.error;
+          footNote.style.color = 'var(--bad)';
+          return;
+        }
+        remember(made.path);
+        go(made.path);        // land in it: the point was to put something here
       }
 
       async function go(path) {
@@ -518,6 +567,41 @@
     };
   };
 
+  /* The hex code of a color well, in a box beside it: on screen without
+     opening the picker, and typed or pasted where the browser's own picker
+     opens on RGB.  `#12A396`, `12a396` and `#1a9` are all read; anything else
+     puts the well's code back.  The well stays the one value -- the box
+     follows it however it is set, from the picker or from code. */
+  LK.hexBox = function (input) {
+    const box = el('input', { type: 'text', class: 'lk-hex', spellcheck: 'false',
+      maxlength: '7', title: 'hex color — type or paste one, e.g. #12A396' });
+    const show = () => { box.value = input.value.toUpperCase(); };
+    const own = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+    Object.defineProperty(input, 'value', {
+      configurable: true,
+      get() { return own.get.call(input); },
+      set(value) { own.set.call(input, value); show(); },
+    });
+    input.addEventListener('input', show);
+    input.addEventListener('change', show);
+    // Typing is not a choice yet, so it stays in the box: a form listening
+    // further up would redraw from a half-written code.
+    box.addEventListener('input', (e) => e.stopPropagation());
+    box.addEventListener('change', (e) => {
+      e.stopPropagation();
+      const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(box.value.trim());
+      if (!m) { show(); return; }
+      const hex = m[1].length === 3 ? m[1].replace(/./g, '$&$&') : m[1];
+      if ('#' + hex.toLowerCase() === input.value) { show(); return; }
+      input.value = '#' + hex;
+      // What picking it in the well would have sent.
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    show();
+    return box;
+  };
+
   // ------------------------------------------------------- plot controls ---
 
   /* "min, max" as a pair, or null for anything else -- the same reading as
@@ -633,17 +717,18 @@
      upright panel, the width of a turned one -- because that is the axis a bar
      is read along and the one bar_mm is not already sizing.
 
-     The width is not set at all. It is calculated, from one bar: 3.5 mm each,
+     The width is not set at all. It is calculated, from one bar: 3.94 mm each,
      so a bar is the same size on the page whether a panel holds two of them
      or seven -- which is what a reader compares across a figure, and what
      goes wrong the moment a panel is stretched to fill its column instead.
 
-     3.5 mm makes a category 5.65 mm wide, which is the first width that
-     clears the (n = 5) printed under a group name: at 7 pt that line is
-     5.33 mm, and at a 3 mm bar it collides with the next one. Two groups then
-     come to 21 mm, so four panels stand in one journal column; five come to
-     36 mm. Names past about four characters -- R201C, rescue -- need 5 mm or
-     the x rotation, and there is no width that fits them and stays this tight.
+     3.94 mm makes a category 6.35 mm wide -- 0.25 in, the pitch the lab's
+     own ephys notebook draws at (figsize=(0.25*18, 1.2)), so a panel from
+     here and a panel from that notebook sit side by side at one scale. It
+     also clears the (n = 5) printed under a group name, which at 7 pt is
+     5.33 mm. Names past about four characters -- R201C, rescue -- still want
+     the x rotation or the horizontal box; no width fits them and stays this
+     tight.
      The column width becomes a ceiling: past about twenty groups the bars give
      way rather than the figure running off the page.
 
@@ -661,10 +746,29 @@
   const JOURNAL_PANEL = { bar_mm: 3.5, axes_mm: 32, line_width: 0.75 };
 
   /** Mirrors labkit.plots.PlotSpec -- keep the two in step. */
+  /* `names` in the sequence `order` asks for, keeping the strangers.
+   *
+   * The twin of labkit.plots.order_series, and the same reasoning: the order a
+   * reader needs is almost never alphabetical -- WT, P716L, Y715C is the order
+   * along the protein, and sorting puts the wild type last. A name the order
+   * does not mention keeps its place after the ones it does, so a saved order
+   * outlives the dataset it was typed for and a new condition appears at the
+   * end instead of vanishing. */
+  LK.orderSeries = function (names, order) {
+    const have = (names || []).map(String);
+    if (!order || !order.length) return have;
+    const seen = new Set();
+    const first = [];
+    order.map(String).forEach((name) => {
+      if (have.includes(name) && !seen.has(name)) { seen.add(name); first.push(name); }
+    });
+    return first.concat(have.filter((n) => !seen.has(n)));
+  };
+
   LK.defaultSpec = function () {
     return {
       kind: 'bar', centre: 'mean', error: 'sem', points: 'jitter',
-      palette: 'red-grey', colours: {},
+      palette: 'red-grey', colours: {}, order: [],
       width_mm: 85, height_mm: 0, axes_width_mm: 0, axes_height_mm: 0, bar_mm: 3.5,
       horizontal: false,
       font_pt: 8, font: 'arial',
@@ -760,8 +864,16 @@
     rows.forEach(([key, built]) => { fields[key] = built.field; root.appendChild(built.row); });
 
     const swatches = el('div', { class: 'swatches' });
+    /* The way back out of a typed order, which is not the same as alphabetical:
+       it hands the sequence back to whatever the data arrived in. */
+    const orderReset = el('button', { type: 'button', class: 'small ghost', hidden: true,
+      text: 'Default order',
+      title: 'Forget the order typed here and draw the conditions in the order '
+        + 'the data arrived in' });
     root.appendChild(el('label', { class: 'row' },
       [el('span', { text: '' }), swatches]));
+    root.appendChild(el('label', { class: 'row' },
+      [el('span', { text: '' }), orderReset]));
 
     // Saved schemes. Hidden unless the app serves the store, so an app
     // without labkit.schemes wired up shows no button that cannot work.
@@ -882,7 +994,7 @@
       + 'right, first group at the top. The sizing turns with it \u2014 the bar '
       + 'box still sets one bar\u2019s thickness and the axes box now pins the '
       + 'width. Worth it for long group names, which get a whole column to '
-      + 'themselves instead of 5.65 mm of tick.'],
+      + 'themselves instead of 6.35 mm of tick.'],
      ['show_n', 'n on the axis', 'Put (n = …) beside each group label'],
      ['log_y', 'Log value axis', 'The values, wherever they are: x on a turned panel.'],
      ['legend', 'Legend', '']].forEach(([key, label, title]) => {
@@ -1107,6 +1219,12 @@
        when the palette or the list of names changes, because rebuilding it
        under an open picker closes the picker. */
     let colourKeys = [];
+    /* The names as the data handed them over, kept so that "Default order"
+       has something to go back to: `colourKeys` is the *drawn* sequence and a
+       move rewrites it, so clearing `order` without this would leave the panel
+       showing a sequence the figure no longer draws -- the two disagreeing is
+       the exact failure the one-sequence rule exists to prevent. */
+    let arrivedKeys = [];
     let colourSig = null;
     const colourInputs = {};
 
@@ -1128,7 +1246,7 @@
           swatches.appendChild(el('span', { class: 'swatch', style: { background: colour } })));
         return;
       }
-      colourKeys.forEach((key) => {
+      colourKeys.forEach((key, at) => {
         /* Keyed by name: an override has to mean "the KO is this red", not
            "the second group is", or a figure that gains a genotype in the
            middle of the list silently recolors the ones either side. */
@@ -1136,9 +1254,33 @@
           state.colours = Object.assign({}, state.colours, { [key]: input.value });
         } });
         colourInputs[key] = input;
+        /* This list is already the conditions in the order they are drawn, so
+           it is where they are reordered: one move writes `order`, and the
+           figure, the colors and the brackets all follow it because they are
+           all read off the one sequence. */
+        const move = (step) => () => {
+          const i = colourKeys.indexOf(key);
+          const j = i + step;
+          if (i < 0 || j < 0 || j >= colourKeys.length) return;
+          const next = colourKeys.slice();
+          next.splice(j, 0, next.splice(i, 1)[0]);
+          colourKeys = next;
+          state.order = next.slice();
+          colourSig = null;            // the signature IS the key list: force the rebuild
+          refresh();
+        };
+        const arrow = (text, step, dead) => el('button', {
+          type: 'button', class: 'nudge', text, disabled: dead,
+          title: dead ? '' : (step < 0 ? 'Draw ' + key + ' earlier'
+                                       : 'Draw ' + key + ' later'),
+          onclick: move(step),
+        });
         swatches.appendChild(el('label', { class: 'swatch-pick' },
-          [input, el('span', { text: key })]));
+          [arrow('\u25c2', -1, at === 0), input, LK.hexBox(input),
+           el('span', { text: key }),
+           arrow('\u25b8', 1, at === colourKeys.length - 1)]));
       });
+      orderReset.hidden = !(state.order && state.order.length);
       writeColours();
     }
 
@@ -1167,6 +1309,13 @@
       buildSwatches();
       preview.textContent = describe(state);
     }
+
+    orderReset.addEventListener('click', () => {
+      state.order = [];
+      colourKeys = arrivedKeys.slice();   // back to the order the data arrived in
+      colourSig = null;
+      refresh();
+    });
 
     let notifying = false;
     function refresh() {
@@ -1297,9 +1446,13 @@
         readFields();
         writeColours();
       },
-      /** One color box per series, named. Call it once the labels are known. */
+      /** One color box per series, named, in the order they will be drawn.
+          Call it once the labels are known: it is also the reorder control, so
+          an app that never calls it gets palette swatches and no way to say
+          what sequence the conditions go in. */
       setColourKeys(labels) {
-        colourKeys = (labels || []).map(String);
+        arrivedKeys = (labels || []).map(String);
+        colourKeys = LK.orderSeries(arrivedKeys, state.order);
         buildSwatches();
       },
       /** Offer "everything against <control>" once the group labels are known. */
@@ -1336,6 +1489,226 @@
         readFields();
       },
     };
+  };
+
+  // ----------------------------------------------------------- plate map ---
+
+  /* labkit.plate.FORMATS: rows and columns of each SBS plate, smallest first. */
+  LK.PLATE_FORMATS = {
+    '6-well': [2, 3], '12-well': [3, 4], '24-well': [4, 6],
+    '48-well': [6, 8], '96-well': [8, 12], '384-well': [16, 24],
+  };
+
+  /* labkit.plate.canon_well for the spellings a layout file can hold: "b1",
+     "B-01" -> "B01". The server reads the rest (a plate reader's r02c01). */
+  function canonWell(text) {
+    const m = /^([A-Pa-p])[\s_-]?0*(\d{1,2})$/.exec(String(text).trim());
+    return m ? m[1].toUpperCase() + m[2].padStart(2, '0') : null;
+  }
+
+  /**
+   * A plate map: which wells got what.
+   *
+   *   layout    { format, labels: { column: { B01: 'WT' } } } -- the shape
+   *             labkit.plate reads and writes, edited in place
+   *   wells     the ids that have data; every other well is drawn faint
+   *   emptyNote what a well with no data is called on hover ('no images')
+   *   columns   names to offer for a column of labels
+   *   onchange  called after every edit
+   *
+   * Select wells (click, drag, or a row or column heading), type what is in
+   * them, Enter.  One column of labels at a time: a two-factor plate is two
+   * passes over the same grid, not one cell holding two things.
+   */
+  LK.plateEditor = function (host, options) {
+    const opts = Object.assign({ layout: null, wells: [], onchange: null,
+      columns: ['variant', 'treatment', 'condition', 'concentration', 'cell_line'],
+      // What a well with no data is called on hover. Most callers here mean
+      // images; an app planning a plate it has not run yet means something
+      // else, and a hard-coded 'no images' was simply wrong on its screen.
+      emptyNote: 'no images' },
+    options || {});
+    const layout = opts.layout || {};
+    layout.labels = layout.labels || {};
+    const present = new Set(opts.wells);
+    const picked = new Set();
+    let column = Object.keys(layout.labels)[0] || opts.columns[0];
+    let adding = true;          // what the drag in progress does to a well
+    let dragging = false;       // a press on a well, not yet let go
+
+    // The smallest plate that holds every well in use. Nothing in a filename
+    // says which of the six it was, but r08c02 rules out the four smaller ones.
+    function fit() {
+      const used = opts.wells.concat(...Object.values(layout.labels).map(Object.keys));
+      const holds = (f) => used.every((id) => id.charCodeAt(0) - 65 < LK.PLATE_FORMATS[f][0]
+        && Number(id.slice(1)) <= LK.PLATE_FORMATS[f][1]);
+      if (!LK.PLATE_FORMATS[layout.format] || !holds(layout.format)) {
+        layout.format = Object.keys(LK.PLATE_FORMATS).find(holds) || '384-well';
+      }
+    }
+    const changed = () => opts.onchange && opts.onchange(layout);
+
+    const formatSelect = el('select', {
+      title: 'Plate format',
+      onchange: (e) => { layout.format = e.target.value; picked.clear(); paint(); changed(); },
+    });
+    const columnSelect = el('select', {
+      title: 'The column these labels make. One at a time: pick another to label '
+        + 'the same wells by something else, such as a treatment.',
+      onchange: (e) => {
+        if (e.target.value === '') {
+          column = (prompt('Name of the new column') || '').trim() || column;
+        } else column = e.target.value;
+        paint();
+      },
+    });
+    const labelBox = el('input', {
+      type: 'text', placeholder: 'what is in the selected wells',
+      onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); assign(); } },
+    });
+    // Select, type, Enter: the label box takes the keyboard as soon as the
+    // mouse lets go of the grid.
+    const grid = el('div', { class: 'lk-plate',
+      onmouseup: () => { dragging = false; labelBox.focus(); } });
+    const legend = el('div', { class: 'lk-plate-bar' });
+    const fileBox = el('input', {
+      type: 'file', accept: '.json,application/json', style: { display: 'none' },
+      onchange: async (e) => {
+        const file = e.target.files[0];
+        e.target.value = '';
+        if (!file) return;
+        let read;
+        try { read = JSON.parse(await file.text()); } catch (err) {
+          alert('That is not a layout file: ' + err.message); return;
+        }
+        // A layout saved here, or one saved by Scrambler (one `assignments` map).
+        const labels = read.labels || (read.assignments ? { condition: read.assignments } : {});
+        layout.format = read.format || read.plate_format;
+        layout.labels = {};
+        Object.keys(labels).forEach((name) => Object.keys(labels[name] || {}).forEach((well) => {
+          const id = canonWell(well), value = String(labels[name][well] || '').trim();
+          if (id && value) (layout.labels[name] = layout.labels[name] || {})[id] = value;
+        }));
+        column = Object.keys(layout.labels)[0] || column;
+        picked.clear();
+        paint();
+        changed();
+      },
+    });
+
+    function assign() {
+      const value = labelBox.value.trim();
+      const into = layout.labels[column] = layout.labels[column] || {};
+      picked.forEach((id) => { if (value) into[id] = value; else delete into[id]; });
+      if (!Object.keys(into).length) delete layout.labels[column];
+      picked.clear();
+      labelBox.value = '';
+      paint();
+      changed();
+    }
+
+    function paint() {
+      fit();
+      const rows = LK.PLATE_FORMATS[layout.format][0], cols = LK.PLATE_FORMATS[layout.format][1];
+      const labels = layout.labels[column] || {};
+      // In the order they were first given, not sorted: a label keeps its color
+      // while the next ones are added.
+      const values = Array.from(new Set(Object.values(labels)));
+      const tint = (value) => LK.seriesColour(values.indexOf(value));
+
+      formatSelect.innerHTML = '';
+      Object.keys(LK.PLATE_FORMATS).forEach((f) => formatSelect.appendChild(
+        el('option', { value: f, text: f, selected: f === layout.format })));
+      columnSelect.innerHTML = '';
+      Array.from(new Set(Object.keys(layout.labels).concat(column, opts.columns)))
+        .forEach((name) => {
+          const n = Object.keys(layout.labels[name] || {}).length;
+          columnSelect.appendChild(el('option', {
+            value: name, selected: name === column,
+            text: name + (n ? ' · ' + n + (n === 1 ? ' well' : ' wells') : ''),
+          }));
+        });
+      columnSelect.appendChild(el('option', { value: '', text: 'other…' }));
+
+      const ids = [];
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) ids.push(String.fromCharCode(65 + r) + String(c + 1).padStart(2, '0'));
+      }
+      // A heading selects its whole line, or clears it if it already is.
+      const toggle = (line) => {
+        const on = !line.every((id) => picked.has(id));
+        line.forEach((id) => (on ? picked.add(id) : picked.delete(id)));
+        paint();
+      };
+      const heading = (text, line, title) => el('div', {
+        class: 'lk-plate-head', text, title, onclick: () => toggle(line) });
+
+      grid.innerHTML = '';
+      grid.style.gridTemplateColumns = '1.7em repeat(' + cols + ', minmax(0, 1fr))';
+      grid.classList.toggle('dense', cols > 12);
+      grid.appendChild(heading('', ids, 'Every well'));
+      for (let c = 0; c < cols; c++) {
+        grid.appendChild(heading(String(c + 1), ids.filter((id, i) => i % cols === c), 'Column ' + (c + 1)));
+      }
+      ids.forEach((id, i) => {
+        if (i % cols === 0) grid.appendChild(heading(id[0], ids.slice(i, i + cols), 'Row ' + id[0]));
+        const said = Object.keys(layout.labels).filter((name) => layout.labels[name][id])
+          .map((name) => name + ': ' + layout.labels[name][id]);
+        const mark = (node) => {
+          if (adding) picked.add(id); else picked.delete(id);
+          node.classList.toggle('sel', adding);
+        };
+        grid.appendChild(el('div', {
+          class: 'lk-well' + (present.has(id) ? ' has' : '') + (picked.has(id) ? ' sel' : ''),
+          text: labels[id] || '',
+          title: [id].concat(said, present.has(id) ? [] : [opts.emptyNote]).join(' · '),
+          style: labels[id] ? { background: tint(labels[id]) + '66' } : null,
+          // preventDefault: a drag across the grid is a selection of wells,
+          // not of the text in them.
+          onmousedown: (e) => {
+            e.preventDefault(); dragging = true; adding = !picked.has(id); mark(e.currentTarget);
+          },
+          // Only a drag that began on a well. A press on a well the pointer was
+          // not yet known to be over (a redrawn grid, a tap) arrives as an enter
+          // with the button already down, then the press: marking on that enter
+          // made the press undo it, so every other selection came out empty.
+          onmouseenter: (e) => {
+            if (!(e.buttons & 1)) dragging = false; else if (dragging) mark(e.currentTarget);
+          },
+        }));
+      });
+
+      legend.innerHTML = '';
+      values.forEach((value) => legend.appendChild(el('button', {
+        class: 'ghost small', title: 'Use this label for the selected wells',
+        onclick: () => { labelBox.value = value; labelBox.focus(); },
+      }, [el('span', { class: 'lk-plate-swatch', style: { background: tint(value) } }),
+          value + ' · ' + Object.values(labels).filter((v) => v === value).length])));
+    }
+
+    const node = el('div', { class: 'lk-plate-editor' }, [
+      el('div', { class: 'lk-plate-bar' }, [
+        formatSelect, columnSelect, labelBox,
+        el('button', { class: 'small', text: 'set',
+          title: 'Label the selected wells. An empty label clears them.', onclick: assign }),
+        el('button', { class: 'ghost small', text: 'load…',
+          title: 'Open a saved layout (plate_layout.json, or a layout saved by Scrambler).',
+          onclick: () => fileBox.click() }),
+        el('button', { class: 'ghost small', text: 'save…',
+          title: 'Download this layout as plate_layout.json.',
+          onclick: () => {
+            const link = el('a', { download: 'plate_layout.json', href: URL.createObjectURL(
+              new Blob([JSON.stringify(layout, null, 1)], { type: 'application/json' })) });
+            link.click();
+            URL.revokeObjectURL(link.href);
+          } }),
+        fileBox,
+      ]),
+      grid, legend,
+    ]);
+    paint();
+    if (host) host.appendChild(node);
+    return { node, layout };
   };
 
   // ------------------------------------------------------------ toolbars ---
