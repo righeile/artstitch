@@ -43,6 +43,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import os
+import warnings
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Sequence
@@ -58,7 +59,7 @@ __all__ = [
     "PUBLICATION_RCPARAMS", "use_publication_style", "publication_style",
     "add_scale_bars", "save_figure", "hide_axes",
     "annotate_p", "group_plot", "xy_plot", "trace_plot",
-    "PlotSpec", "figure_from_spec", "comparisons_for", "annotate_from_spec",
+    "PlotSpec", "figure_from_spec", "hold_layout", "comparisons_for", "annotate_from_spec",
     "PALETTES", "FONTS", "VECTOR_TEXT", "TIGHT_CROP",
     "MM", "jitter", "AXES_LENGTH_MM", "BOX_LW",
     "series_names", "order_series", "reorder_data",
@@ -389,15 +390,14 @@ def annotate_p(
     only_significant: bool = False,
     alpha: float = 0.05,
     use_corrected: bool = True,
-    step: float = 0.085,
-    gap: float = 0.035,
-    tip: float = 0.018,
+    gap: float = 3.0,
+    tip: float = 2.0,
     linewidth: float = 0.8,
     fontsize: float | None = None,
     colour: str | None = None,
     dim_ns: bool = True,
     align: str = "stagger",
-    headroom: float = 0.04,
+    outside: bool = False,
     horizontal: bool | None = None,
 ) -> list[dict]:
     """Draw significance brackets over the groups they compare.
@@ -417,21 +417,43 @@ def annotate_p(
         ``'stagger'`` starts each bracket just above the data it spans, which
         is compact.  ``'level'`` puts every bracket at the same base height,
         which reads more evenly when the groups are of similar size.
+    ``outside``
+        Stack the brackets past the far edge of the axes and leave the value
+        limit alone.  For a panel whose data area is pinned to a typed size:
+        room made inside it comes out of the data, and five brackets on a
+        0.93 in panel would leave the data a third of it.  ``align`` has no
+        say there.
     ``horizontal``
         Categories down the y axis, brackets reaching right instead of up.
         Left ``None`` it is read back off the axes, which :func:`group_plot`
         marks -- so a caller that passes the table it always passed gets
         brackets the right way round without knowing about this argument.
+    ``gap``, ``tip``
+        Points from the data (or the edge) to the first bracket, and the
+        length of a bracket's ends.
 
-    Brackets are stacked: a bracket is raised until it sits above every bracket
-    it overlaps, so a three-group figure with all three pairs annotated comes
-    out as a readable ladder rather than three lines on top of each other.
-    The y-limit is then extended to fit them, because a bracket clipped by the
-    axes is worse than no bracket.
+    Brackets are stacked: a bracket takes the lowest row of the ladder clear
+    of every bracket it overlaps, so a three-group figure with all three pairs
+    annotated comes out as a readable ladder rather than three lines on top of
+    each other.  A row is one label deep -- the ends of the bracket above, the
+    text, a hairline -- so no label is crossed by the bracket over it; turned,
+    the labels run along their brackets, which keeps a row one line deep
+    there too.  The rows are in points, not axes fractions, because every
+    caller pins its panel to a size *after* this runs: a fraction of the axes
+    as they are now is a different distance on the page by the time the
+    figure is saved.  Inside, the value limit is extended to hold the ladder,
+    because a bracket clipped by the axes is worse than no bracket; a ladder
+    that would leave the data less than a third of the axis goes outside
+    instead.  Both depend on the size the panel ends up, so :func:`fit_axes`
+    decides them again once it has settled one.
 
-    Returns the comparisons it actually drew, each with the ``y`` it was drawn
-    at, so a caller can put something else beside them.
+    Returns the comparisons it actually drew, each with its ``row`` and the
+    ``base`` it stands on inside (data units; 1.0, the edge, when outside).
     """
+    from matplotlib.font_manager import FontProperties
+    from matplotlib.textpath import text_to_path
+    from matplotlib.transforms import (Affine2D, ScaledTranslation,
+                                       blended_transform_factory)
     from .stats import brackets as _brackets, format_p
 
     if horizontal is None:
@@ -498,87 +520,144 @@ def annotate_p(
 
     colour = colour or theme.PRINT["rule"]
     fontsize = fontsize or mpl.rcParams["font.size"]
-
-    # The layout is worked out in axes fractions, because a fixed data-unit
-    # step between rows of the ladder would collapse at the top of a log axis.
-    # It is then converted back to data units *before* anything is drawn, and
-    # drawn in data coordinates -- an earlier version left the brackets pinned
-    # to axes fractions, so extending the y-limit to make room moved the data
-    # down and left the brackets sitting outside the frame.
-    to_axes = ax.transData + ax.transAxes.inverted()
-    from_axes = ax.transAxes + ax.transData.inverted()
-
-    def _axes_y(magnitude: float) -> float:
-        return float(to_axes.transform(_pair(0.0, magnitude))[along])
-
-    def _data_y(fraction: float) -> float:
-        return float(from_axes.transform(_pair(0.0, fraction))[along])
+    # One row of the ladder: the ends of the bracket above, a hairline, a line
+    # of text, a hairline.
+    lift, pad = 0.8, 1.0
+    line = text_to_path.get_text_width_height_descent(
+        "lp", FontProperties(size=fontsize), False)[1]
+    step = tip + lift + line + pad
 
     # Every ceiling is measured before the first bracket exists.  Measuring as
     # we go would let each bracket see the one below it as data and raise
     # itself off that, so the ladder would climb twice as fast as it needs to.
     ceilings = {
-        id(entry): _axes_y(_data_ceiling(ax, entry["x1"], entry["x2"], horizontal))
+        id(entry): _data_ceiling(ax, entry["x1"], entry["x2"], horizontal)
         for entry in placeable
     }
-    common_base = max(ceilings.values()) if align == "level" else 0.0
+    common = max(ceilings.values())
 
-    placed: list[tuple[float, float, float]] = []   # (x1, x2, y) already laid out
-    layout: list[tuple[dict, float]] = []
-    highest = 0.0
-
+    # A base is in data units and a row in points, so how far apart two bases
+    # are on the page depends on the size the panel ends up.  A bracket
+    # therefore stands on the highest base of anything it overlaps, and slots
+    # *under* one only when the two share a base -- the one case where
+    # "underneath" holds at every size.
+    placed: list[tuple[dict, float, int]] = []
     for entry in placeable:
-        base = common_base if align == "level" else ceilings[id(entry)]
-        y = base + gap
-        # Raise until clear of every bracket whose span this one overlaps.  The
-        # span is padded so two brackets that merely touch at a shared group
-        # still get separate rows.
+        base = 1.0 if outside else common if align == "level" else ceilings[id(entry)]
+        # The span is padded so two brackets that merely touch at a shared
+        # group still get separate rows.
         margin = 0.02 * max(1.0, abs(entry["x2"] - entry["x1"]))
-        while any(
-            not (entry["x2"] + margin < px1 or entry["x1"] - margin > px2)
-            and abs(py - y) < step * 0.9
-            for px1, px2, py in placed
-        ):
-            y += step
-        placed.append((entry["x1"], entry["x2"], y))
-        layout.append((entry, y))
-        highest = max(highest, y + step * 0.55)
+        under = [(b, r) for e, b, r in placed
+                 if not (entry["x2"] + margin < e["x1"] or entry["x1"] - margin > e["x2"])]
+        base = max([base] + [b for b, _ in under])
+        row = 0
+        while any(row == r or (row < r and b != base) for b, r in under):
+            row += 1
+        placed.append((entry, base, row))
 
-    # Convert while the old limits are still in force.  ``from_axes`` is a live
-    # transform, not a snapshot: read it after ``set_ylim`` and every position
-    # would be re-measured against the limits it had just been used to choose.
-    resolved = [
-        (entry, _data_y(y), _data_y(y - tip), _data_y(y + tip * 0.45))
-        for entry, y in layout
-    ]
-    ceiling_data = _data_y(highest + headroom)
+    # Each bracket is drawn in a frame of its own: the category in data units,
+    # the magnitude in points from its base.  The transforms are live, so the
+    # ladder keeps its shape whatever size the panel is pinned to afterwards.
+    fig = ax.figure
+    points = Affine2D().scale(1 / 72) + fig.dpi_scale_trans
 
-    low, high = getattr(ax, f"get_{value}lim")()
-    inverted = high < low
-    if highest + headroom > 1.0:
-        getattr(ax, f"set_{value}lim")(
-            *((ceiling_data, high) if inverted else (low, ceiling_data)))
+    def _frame(base: float, anchor, across=ax.transData):
+        up = points + ScaledTranslation(*_pair(0.0, base), anchor)
+        return blended_transform_factory(*_pair(across, up))
 
     drawn: list[dict] = []
-    for entry, y, tip_y, text_y in resolved:
+    marks: list[list] = []
+    for entry, base, row in placed:
         faded = dim_ns and not entry["significant"]
         line_colour = theme.PRINT["muted"] if faded else colour
-
-        ax.plot(
+        bar = gap + row * step
+        # Drawn in its frame from the start: plotted in data units, the
+        # points would be taken for data and stretch the autoscaled limit.
+        frame = _frame(1.0, ax.transAxes) if outside else _frame(base, ax.transData)
+        mark = ax.plot(
             *_pair([entry["x1"], entry["x1"], entry["x2"], entry["x2"]],
-                   [tip_y, y, y, tip_y]),
-            clip_on=False, zorder=10,
+                   [bar - tip, bar, bar, bar - tip]),
+            transform=frame, clip_on=False, zorder=10,
             lw=linewidth, color=line_colour, solid_capstyle="butt",
         )
         if entry["text"]:
-            ax.text(
-                *_pair((entry["x1"] + entry["x2"]) / 2.0, text_y), entry["text"],
-                clip_on=False, zorder=10,
+            # Turned, the label runs along its bracket.  Across it, a row
+            # would have to be as deep as the label is long.
+            mark.append(ax.text(
+                *_pair((entry["x1"] + entry["x2"]) / 2.0, bar + lift), entry["text"],
+                transform=frame, clip_on=False, zorder=10,
+                rotation=90 if horizontal else 0,
                 ha="left" if horizontal else "center",
                 va="center" if horizontal else "bottom", color=line_colour,
                 fontsize=fontsize * (0.92 if faded else 1.0),
-            )
-        drawn.append({**entry, "y": y})
+            ))
+        marks.append(mark)
+        drawn.append({**entry, "base": base, "row": row})
+    depth = gap + max(row for *_, row in placed) * step + lift + line
+
+    def _anchor(out: bool) -> None:
+        """Stand the ladder on the data, or every bracket of it on the edge."""
+        for mark, (_, base, _) in zip(marks, placed):
+            frame = _frame(1.0, ax.transAxes) if out else _frame(base, ax.transData)
+            for artist in mark:
+                artist.set_transform(frame)
+        ladder = getattr(ax, "_labkit_ladder", None)
+        if out and ladder is None:
+            # Nothing on the axes says the ladder is there, so a title would
+            # sit on it.  An empty child axes its size does: a title clears
+            # the child axes, and tight and constrained layout make room.
+            ladder = ax.inset_axes(_pair(0.0, 0.0) + _pair(1.0, depth),
+                                   transform=_frame(1.0, ax.transAxes, ax.transAxes))
+            ladder.set_axis_off()
+            ax._labkit_ladder = ladder
+        elif not out and ladder is not None:
+            ladder.remove()
+            del ax._labkit_ladder
+
+    if outside:
+        _anchor(True)
+        return drawn
+
+    # Inside, the value limit grows until the ladder fits under it.  How far
+    # depends on how long the axis is on the page, which only fit_axes
+    # settles -- so this is kept on the axes for it to run again then.
+    to_axes = ax.transData + ax.transAxes.inverted()
+    tops = [(float(to_axes.transform(_pair(0.0, base))[along]),
+             gap + row * step + lift + line + pad) for _, base, row in placed]
+    beyond = (ax.transAxes + ax.transData.inverted()).frozen()
+    get_lim, set_lim = getattr(ax, f"get_{value}lim"), getattr(ax, f"set_{value}lim")
+    start = tuple(get_lim())
+    mine = [start]
+
+    def _make_room(width: float = 0.0, height: float = 0.0) -> bool:
+        """Settle the ladder for an axes box this size in inches (0: as drawn
+        now); say if that moved it."""
+        box = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+        length = 72.0 * ((width or box.width) if horizontal else (height or box.height))
+        was = (tuple(get_lim()), hasattr(ax, "_labkit_ladder"))
+        if tuple(get_lim()) in mine:
+            # The data keep a third of the axis at least.  A ladder that needs
+            # more goes past the end of the axes, all of it: half in and half
+            # out, a box's top would run through it, and a title sit on it.
+            out = any(top > 2.0 * length / 3.0 for _, top in tops)
+            grow = 1.0 if out else max(
+                [1.0] + [f * length / (length - top) for f, top in tops])
+            want = start if grow <= 1.0 else (
+                start[0], float(beyond.transform(_pair(0.0, grow))[along]))
+            if want != tuple(get_lim()):
+                set_lim(*want)
+            mine.append(tuple(get_lim()))
+        else:
+            # A limit set since is the caller's, and stands; the ladder stays
+            # under it only if it fits there.
+            now = ax.transData + ax.transAxes.inverted()
+            out = any(float(now.transform(_pair(0.0, base))[along]) * length + top > length
+                      for (_, base, _), (_, top) in zip(placed, tops))
+        _anchor(out)
+        return was != (tuple(get_lim()), hasattr(ax, "_labkit_ladder"))
+
+    _make_room()
+    ax._labkit_make_room = _make_room
     return drawn
 
 
@@ -1186,6 +1265,8 @@ def family_plot(panels: Sequence[dict], spec: "PlotSpec", unit: str = "pA/pF"):
     # was asked for -- silently, because fit_axes never measures again after
     # its last resize.  Fit where the saving happens and the number lands.
     fit_axes(fig, spec.axes_width_mm, spec.axes_height_mm)
+    if spec.axes_width_mm > 0 or spec.axes_height_mm > 0:
+        hold_layout(fig)
     return fig, axes
 
 
@@ -1526,8 +1607,8 @@ def series_names(data) -> list[str]:
 def order_series(names, order) -> list[str]:
     """``names`` put in the sequence ``order`` asks for, keeping the strangers.
 
-    The sequence a reader needs is almost never alphabetical: ``WT``, ``P716L``,
-    ``Y715C`` is the order of the mutation along the protein, and sorted() puts
+    The sequence a reader needs is almost never alphabetical: ``WT``, ``Y715C``,
+    ``P716L`` is the order of the mutation along the protein, and sorted() puts
     the wild type last.  So the order is the user's to state, and this is the one
     rule that applies it everywhere -- the figure, the colors, the brackets and
     the legend all read the same list.
@@ -1618,7 +1699,9 @@ def fit_axes(fig, width_mm: float = 0.0, height_mm: float = 0.0,
         return size
     nrow, ncol = panels[0].get_subplotspec().get_gridspec().get_geometry()
     for _ in range(max(1, passes)):
-        fig.draw_without_rendering()
+        with warnings.catch_warnings(record=True) as said:
+            warnings.simplefilter("always")
+            fig.draw_without_rendering()
         box = panels[0].get_window_extent().transformed(
             fig.dpi_scale_trans.inverted())
         wide, high = fig.get_size_inches()
@@ -1628,13 +1711,55 @@ def fit_axes(fig, width_mm: float = 0.0, height_mm: float = 0.0,
             # again rather than stepping on a number that is not there.
             fig.set_size_inches(wide * 1.6, high * 1.6)
             continue
+        if any("collapsed to zero" in str(w.message) for w in said):
+            # Constrained layout that gives up says so and leaves the axes
+            # where they were: a size, but not one the labels fit around.
+            # What they need is on the page all the same -- a ladder of
+            # brackets taller than the canvas, say -- so give it that.
+            need = fig.get_tightbbox()
+            grown = (max(wide, need.width * 1.1), max(high, need.height * 1.1))
+            if grown != (wide, high):
+                fig.set_size_inches(*grown)
+                continue
+        # A bracket ladder is laid out in points, so the room it makes in the
+        # value limit, or past it, depends on how long the axis will be: ask
+        # it for the size being pinned, not the size just drawn, or the two
+        # chase each other.  Whatever it moves needs one more look.
+        moved = [getattr(ax, "_labkit_make_room", lambda *_: False)(want_w, want_h)
+                 for ax in panels]
         dw = ncol * (want_w - box.width) if want_w > 0.0 else 0.0
         dh = nrow * (want_h - box.height) if want_h > 0.0 else 0.0
-        size = (max(wide + dw, 0.3), max(high + dh, 0.3))
-        fig.set_size_inches(*size)
-        if abs(dw) < 0.008 and abs(dh) < 0.008:      # a fifth of a millimeter
+        fig.set_size_inches(max(wide + dw, 0.3), max(high + dh, 0.3))
+        if abs(dw) < 0.008 and abs(dh) < 0.008 and not any(moved):  # a fifth of a mm
             break
-    return size
+    return tuple(float(v) for v in fig.get_size_inches())
+
+
+def hold_layout(fig) -> None:
+    """Keep the layout :func:`fit_axes` settled, whatever the file is saved at.
+
+    Constrained layout runs again at every draw, and a save is a draw at the
+    *file's* resolution: 72 dpi for SVG and PDF, the asked-for dpi for a PNG.
+    The labels measure a little differently there, so the layout settles on
+    other axes -- measured 2026-10-27, three groups fitted at 19.86 mm saved at
+    20.58 in all three formats, a category 6.59 mm wide instead of 6.35.  The
+    value axis held only because it is the one dimension nothing crowds.
+    Nothing warns: the canvas is the size it was, only the plot inside it moved.
+
+    So, once the fit is final: one more draw, so the axes sit in the canvas
+    size the last fit pass set, and then no layout engine, so no save can move
+    them again.  An artist added afterwards is not laid out around -- which is
+    the point -- but ``bbox_inches='tight'`` still widens the file to hold it.
+
+    Only for a figure whose axes were pinned.  Where the *figure* size is the
+    promise -- ``bar_mm=0`` and a typed width and height -- it is the save-time
+    layout that keeps it: :data:`TIGHT_CROP` cancels the blank it reserves, so
+    the file is exactly the size asked.  Held, the labels measure narrower at
+    72 dpi and the file comes out 0.15 mm short.  So the axes are held when
+    they are what was asked for, and the canvas when it is.
+    """
+    fig.draw_without_rendering()
+    fig.set_layout_engine("none")
 
 
 def comparisons_for(
@@ -1928,4 +2053,6 @@ def figure_from_spec(
                 break
             want[across] = max(want[across] - over, 5.0)
             settled = fit_axes(fig, *want)
+        if any(want):
+            hold_layout(fig)
     return fig, ax, table
