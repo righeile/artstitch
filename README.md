@@ -169,9 +169,11 @@ scans the parts of an artwork straight from a flatbed scanner on the Scans page.
 An add-on declares a function under the entry-point group `artstitch.addons`;
 it is called once with a `Host` (see `app.py`) that gives it the Flask app to add
 routes to, the job runner, and a place for its own script and stylesheet on the
-page. In the page, `window.ArtStitch` holds what its script may use, and
-`ArtStitch.slot('scans')` is where it puts itself on the Scans page. One that fails
-to load is reported in the terminal and left out.
+page. In the page, `window.ArtStitch` holds what its script may use (opening a
+set, straightening by an angle, following a job), `ArtStitch.slot('scans')` is
+where it puts itself on the Scans page, and every change to the open set is
+announced as the document event `artstitch:session`. One that fails to load is
+reported in the terminal and left out.
 
 ## What to expect
 
