@@ -13,6 +13,7 @@ the output folder of a preset, and an output never replaces a scan.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import subprocess
@@ -21,6 +22,7 @@ import threading
 import time
 import traceback
 import uuid
+from importlib.metadata import entry_points
 from pathlib import Path
 
 import cv2
@@ -161,14 +163,20 @@ def job_cancel(jid: str):
 
 @app.route("/")
 def index():
-    return send_from_directory(str(HERE / "static"), "index.html")
+    if not ADDONS["scripts"] and not ADDONS["styles"]:
+        return send_from_directory(str(HERE / "static"), "index.html")
+    page = (HERE / "static" / "index.html").read_text(encoding="utf-8")
+    links = "".join(f'<link rel="stylesheet" href="{html.escape(u)}">\n' for u in ADDONS["styles"])
+    scripts = "".join(f'<script src="{html.escape(u)}"></script>\n' for u in ADDONS["scripts"])
+    page = page.replace("</head>", links + "</head>", 1).replace("</body>", scripts + "</body>", 1)
+    return Response(page, mimetype="text/html")
 
 
 @app.route("/api/health")
 def health():
     s = STATE["session"]
     return jsonify({"ok": True, "app": "artstitch", "uptime_s": round(time.time() - STARTED, 1),
-                    "session": s.name if s else None})
+                    "session": s.name if s else None, "addons": ADDONS["names"]})
 
 
 @app.route("/api/constants")
@@ -564,6 +572,43 @@ def batch_open():
     return jsonify(STATE["session"].summary())
 
 
+# ============================================================================ add-ons
+
+#: What the installed add-ons are called and what they add to the page, in the order they added it.
+ADDONS: dict = {"names": [], "scripts": [], "styles": []}
+
+
+class Host:
+    """What an add-on is handed.  An add-on is a package of its own, installed into the same Python, that
+    names a function under the entry-point group ``artstitch.addons``; that function is called once, at
+    startup, with a Host.  It adds its routes to ``app`` (a blueprint keeps them together), runs long work
+    through ``start_job`` so the page can follow it, and puts its own script and stylesheet on the page.
+    ArtStitch itself knows nothing of any add-on: without one installed, nothing here does anything."""
+
+    def __init__(self) -> None:
+        self.app, self.start_job, self.Problem, self.body, self.state = app, start_job, Problem, body, STATE
+
+    def add_script(self, url: str) -> None:
+        ADDONS["scripts"].append(url)
+
+    def add_style(self, url: str) -> None:
+        ADDONS["styles"].append(url)
+
+
+def load_addons() -> list[str]:
+    """Call every installed add-on.  One that fails is reported and left out; ArtStitch carries on without it."""
+    for ep in entry_points(group="artstitch.addons"):
+        if ep.name in ADDONS["names"]:
+            continue
+        try:
+            ep.load()(Host())
+            ADDONS["names"].append(ep.name)
+        except Exception:
+            print(f"add-on {ep.name!r} left out: it failed to load", flush=True)
+            traceback.print_exc()
+    return ADDONS["names"]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="ArtStitch web app")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT") or 8800))
@@ -571,7 +616,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.state:
         STATE["dir"] = Path(args.state).expanduser()
+    names = load_addons()
     print(f"ArtStitch on http://127.0.0.1:{args.port}   (presets in {STATE['dir']})", flush=True)
+    if names:
+        print("add-ons: " + ", ".join(names), flush=True)
     app.run(host="127.0.0.1", port=args.port, threaded=True, debug=False)
     return 0
 

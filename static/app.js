@@ -1667,6 +1667,18 @@
     // the buttons say stitch / plane / result; the viewers are keyed the same way
   }
 
+  // ================================================================= add-ons
+
+  // What an add-on's script may use (the server half is Host in app.py).  Its script loads after this one,
+  // before the page is built: it waits with ArtStitch.ready(fn), then puts itself into a slot.
+  const readyFns = [];
+  let booted = false;
+  window.ArtStitch = {
+    req, el, toast, fail, guard, recall, remember, base, home, openPaths, showPage, runJob,
+    slot: (name) => $('addon-' + name),
+    ready: (fn) => { if (booted) fn(); else readyFns.push(fn); },
+  };
+
   async function boot() {
     S.consts = await req('/api/constants');
     wireViews();
@@ -1685,6 +1697,8 @@
     const s = await req('/api/session');
     if (s.open) { openedSession(s); showPage('stitch'); } else showPage('scans');
     restoreBatch().catch(fail);
+    booted = true;
+    readyFns.splice(0).forEach((fn) => { try { fn(); } catch (err) { fail(err); } });
   }
 
   boot().catch(fail);

@@ -1049,6 +1049,44 @@ def test_dust_found_is_patched_and_not_found_again():
         s._touch()
 
 
+# --- add-ons -------------------------------------------------------------------------------------
+
+
+def test_addons_reach_the_page_and_a_broken_one_is_left_out():
+    import flask
+    import app
+
+    def good(host):
+        bp = flask.Blueprint("addon_test", __name__)
+        bp.add_url_rule("/api/addon-test", view_func=lambda: {"ok": True})
+        host.app.register_blueprint(bp)
+        host.add_script("/addons/test/t.js")
+        host.add_style("/addons/test/t.css")
+
+    class Entry:
+        def __init__(self, name, fn):
+            self.name, self.fn = name, fn
+
+        def load(self):
+            return self.fn
+
+    saved, found = {k: list(v) for k, v in app.ADDONS.items()}, app.entry_points
+    app.entry_points = lambda group: [Entry("broken", lambda host: 1 / 0), Entry("good", good)]
+    try:
+        assert app.load_addons() == ["good"]
+        client = app.app.test_client()
+        page = client.get("/").get_data(as_text=True)
+        assert page.index("/static/app.js") < page.index("/addons/test/t.js") < page.index("</body>")
+        assert "/addons/test/t.css" in page.split("</head>")[0]
+        assert client.get("/api/addon-test").get_json() == {"ok": True}
+        assert client.get("/api/health").get_json()["addons"] == ["good"]
+    finally:
+        app.entry_points = found
+        app.ADDONS.update(saved)
+    page = app.app.test_client().get("/").get_data(as_text=True)
+    assert 'id="addon-scans"' in page and "/addons/" not in page          # no add-on: the slot stays empty
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in [(n, f) for n, f in list(globals().items()) if n.startswith("test_") and callable(f)]:
