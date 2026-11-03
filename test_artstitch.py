@@ -1049,6 +1049,16 @@ def test_dust_found_is_patched_and_not_found_again():
         s._touch()
 
 
+def test_lines_angle_reads_the_picture_lines_whatever_the_opencv():
+    img = np.full((600, 800, 3), 230, np.uint8)
+    t = math.tan(math.radians(1.5))
+    for y in range(60, 560, 40):                                   # ruled lines running 1.5 deg clockwise
+        cv2.line(img, (20, y), (780, int(round(y + 760 * t))), (40, 40, 40), 2, cv2.LINE_AA)
+    ang, strength = edges.lines_angle(img.astype(np.float32) / 255)
+    assert abs(math.degrees(ang) - 1.5) < 0.1 and strength > 0.5, (math.degrees(ang), strength)
+    assert edges.lines_angle(np.full((300, 400, 3), 0.9, np.float32)) == (0.0, 0.0)   # a blank sheet: no lines
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in [(n, f) for n, f in list(globals().items()) if n.startswith("test_") and callable(f)]:
