@@ -127,6 +127,37 @@ def flask_blueprint(name: str = "labkit_schemes", url: str = "/api/colour_scheme
     return blueprint
 
 
+def fastapi_router(url: str = "/api/colour_schemes"):
+    """The same routes as :func:`flask_blueprint`, for a FastAPI app."""
+    from fastapi import APIRouter, Body, HTTPException
+
+    router = APIRouter()
+
+    @router.get(url)
+    def _list():
+        return listing()
+
+    @router.get(url + "/{scheme:path}")
+    def _read(scheme: str):
+        return {"name": scheme, "colours": read(scheme)}
+
+    @router.put(url + "/{scheme:path}")
+    def _write(scheme: str, body: dict = Body(default={})):
+        try:
+            written = write(scheme, body.get("colours") or body)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except OSError as exc:
+            raise HTTPException(500, f"could not write the scheme: {exc}")
+        return {"name": scheme, "colours": read(scheme), "path": str(written)}
+
+    @router.delete(url + "/{scheme:path}")
+    def _remove(scheme: str):
+        return {"name": scheme, "deleted": remove(scheme)}
+
+    return router
+
+
 if __name__ == "__main__":
     # The check: a name that tries to climb out of the directory does not, and
     # a color that is not one never reaches a figure.

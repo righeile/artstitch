@@ -5,6 +5,9 @@ A ``.D`` directory is one injection.  Inside it each detector channel is a
 the fluorescence channel -- and the numbers in it are a delta stream, not a
 table.  Nothing here writes: a run folder is the instrument's, read only.
 
+``Lafc1fd.reg`` beside them is the fraction collector's own table; see
+``fractions``.
+
 Only format version **130** is decoded.  A file that says anything else is
 reported by its version rather than guessed at, because a wrong offset reads
 as a plausible, wrong chromatogram.
@@ -32,6 +35,7 @@ from __future__ import annotations
 import re
 import statistics
 import struct
+from datetime import datetime
 from pathlib import Path
 
 DATA = 0x1800
@@ -238,12 +242,69 @@ def _flow(folder: Path) -> float | None:
     return float(m.group(1)) if m else None
 
 
+#: the fraction collector writes its own table beside the channels
+FRAC_REG = "Lafc1fd.reg"
+_WORDS = re.compile(rb"(?:[\x20-\x7e]\x00){2,40}")
+
+
+def fractions(folder: Path | str, flow: float | None = None) -> list[dict]:
+    """What the collector cut, and which well each cut went to.
+
+    ``Lafc1fd.reg`` is a ChemStation register -- an object stream, not a
+    document -- so the table is found by what its numbers have to be rather
+    than at an offset: a row is a little-endian double holding the
+    fraction's number, with its volume in ul 12 bytes on and the start and
+    end of the cut in ms at +20 and +28.  The numbers must run 1, 2, 3 with
+    none skipped and the cuts must not go backwards, which is what keeps a
+    stray double out of the table.  Measured on two S200 runs: rows 180
+    bytes apart from 0x771, 13 of 200 ul on 2026-10-16 and 19 of 120 ul on
+    2026-10-19, both agreeing with the count of "Begin of fraction" lines in
+    ``RUN.LOG`` and with 60 s and 36 s at the 0.2 mL/min the method ran.
+
+    The wells are UTF-16 in the register's string pool, after the column
+    named ``Location`` and before ``Volume``, in the same order.  They are
+    read, never counted out from a start well: the collector snakes --
+    A1..A12 then B12..B1 -- and carries on where the injection before it
+    stopped.
+    """
+    folder = Path(folder)
+    reg = folder / FRAC_REG
+    if not reg.exists():
+        return []
+    b = reg.read_bytes()
+    rows, want, after = [], 1, 0.0
+    for off in range(len(b) - 36):
+        n, = struct.unpack_from("<d", b, off)
+        if n != want:
+            continue
+        ul, = struct.unpack_from("<d", b, off + 12)
+        beg, = struct.unpack_from("<d", b, off + 20)
+        end, = struct.unpack_from("<d", b, off + 28)
+        if not (after <= beg < end < 1e8 and 0 < ul < 1e6):
+            continue
+        rows.append(dict(n=want, ul=round(ul, 2), start_min=beg / 6e4,
+                         end_min=end / 6e4, well=""))
+        want, after = want + 1, beg
+    words = [m.group().decode("utf-16-le") for m in _WORDS.finditer(b)]
+    if "Location" in words and "Volume" in words:
+        i, j = words.index("Location"), words.index("Volume")
+        where = words[i + 1:j]
+        if len(where) == len(rows):      # anything else is not this table
+            for r, w in zip(rows, where):
+                r["well"] = w
+    for r in rows:
+        r["start_ml"] = r["start_min"] * flow if flow else None
+        r["end_ml"] = r["end_min"] * flow if flow else None
+    return rows
+
+
 def injection(folder: Path | str, cap: int = 1200) -> dict:
     """One ``.D`` folder: every channel in it, thinned for drawing."""
     folder = Path(folder)
     flow = _flow(folder)
     out = {"dir": folder.name, "path": str(folder), "flow_ml_min": flow,
-           "signals": [], "unreadable": []}
+           "signals": [], "unreadable": [],
+           "fractions": fractions(folder, flow)}
     for ch in sorted(folder.glob("*.ch")):
         try:
             s = signal(ch)
@@ -262,13 +323,20 @@ def injection(folder: Path | str, cap: int = 1200) -> dict:
     return out
 
 
-def run(folder: Path | str, cap: int = 1200) -> dict:
-    """A whole sequence folder, oldest injection first.
+def started(when: str | None) -> datetime | None:
+    """ChemStation's own stamp, ``16-Oct-26, 17:48:08``, as a date.
 
-    ``ACQUIRING.TXT`` names the one the instrument is still filling, which is
-    why a trial run looks short rather than empty.
+    Returned as None rather than guessed at when it is missing or in some
+    other shape: an injection still being acquired has no stamp yet.
     """
-    folder = Path(folder)
+    try:
+        return datetime.strptime(when, "%d-%b-%y, %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+
+def _sequence(folder: Path, cap: int) -> dict:
+    """One sequence folder: its injections, and when the first one started."""
     if not folder.is_dir():
         raise ValueError("%s is not a folder" % folder)
     dirs = sorted(p for p in folder.iterdir() if p.suffix.upper() == ".D")
@@ -282,7 +350,44 @@ def run(folder: Path | str, cap: int = 1200) -> dict:
     runs = [injection(p, cap) for p in dirs]
     for r in runs:
         r["acquiring"] = r["dir"].upper() in busy.upper()
-    return {"folder": str(folder), "name": folder.name, "runs": runs}
+        r["part"] = folder.name
+    stamps = [t for t in (started(r.get("when")) for r in runs) if t]
+    return {"folder": str(folder), "name": folder.name, "runs": runs,
+            "started": min(stamps) if stamps else None}
+
+
+def run(folders: Path | str | list, cap: int = 1200) -> dict:
+    """One sequence folder, or several fused, oldest injection first.
+
+    ``ACQUIRING.TXT`` names the one the instrument is still filling, which is
+    why a trial run looks short rather than empty.
+
+    A sequence that stopped partway is resumed as a *second* folder, and the
+    two are one experiment: pass both and the injections come back in one
+    list.  Measured on the S200 here -- 2026-10-16 stopped after eight of its
+    nine injections and 2026-10-19 carried on at the next vial, with the
+    instrument's own codes running straight on, 1AI then 1AJ.  The parts are
+    ordered by the stamp the instrument wrote on their first injection, not
+    by the order they were picked, and each injection carries the ``part`` it
+    came from.
+
+    Nothing is renumbered.  A resumed run starts the collector again at the
+    first well of a fresh plate, so the same well name appears in both parts
+    and means two different tubes; the wells stay as the instrument wrote
+    them, and the part beside them says which plate they were.
+    """
+    paths = ([Path(folders)] if isinstance(folders, (str, Path))
+             else [Path(f) for f in folders])
+    if not paths:
+        raise ValueError("no folder given")
+    parts = [_sequence(p, cap) for p in paths]
+    parts.sort(key=lambda q: q["started"] or datetime.max)
+    name = parts[0]["name"] if len(parts) == 1 else (
+        "%s +%d" % (parts[0]["name"], len(parts) - 1))
+    return {"folder": parts[0]["folder"], "name": name,
+            "runs": [inj for q in parts for inj in q["runs"]],
+            "parts": [{"name": q["name"], "folder": q["folder"],
+                       "injections": len(q["runs"])} for q in parts]}
 
 
 # ------------------------------------------------------------ for purifig
@@ -310,6 +415,8 @@ def export_text(folder, dirs, channel: str, flow: float | None = None,
     names = names or {}
     cols = []
     for name in dirs:
+        # ``folder / name`` is the whole path when *name* already is one,
+        # which is how a run fused out of two folders names its injections.
         path = folder / name
         chs = [p for p in path.glob("*.ch") if p.stem == channel]
         if not chs:
@@ -364,6 +471,24 @@ def _fixture(want, description="test"):
     return bytes(d)
 
 
+def _frac_fixture(cuts, wells, start=0x771, stride=180) -> bytes:
+    """A register-shaped blob: rows at an odd offset, the names pooled after.
+
+    Deliberately not a copy of the real file -- only the two things the
+    reader leans on, so a check failing means the reader changed.
+    """
+    b = bytearray(start + stride * len(cuts) + 64)
+    for i, (ul, beg, end) in enumerate(cuts):
+        off = start + i * stride
+        struct.pack_into("<d", b, off, float(i + 1))
+        struct.pack_into("<d", b, off + 12, ul)
+        struct.pack_into("<d", b, off + 20, beg)
+        struct.pack_into("<d", b, off + 28, end)
+    for w in ["NumFraction", "Location"] + list(wells) + ["Volume", "Delay1"]:
+        b += w.encode("utf-16-le") + b"\x00\x00\x00"
+    return bytes(b)
+
+
 def _check():
     """The decoder, against a stream written to the same rules."""
     want = [0, 5, 5, 4, 9, 40, 9, 4, 4, 4, 4, 3, 3, 3, 900, 3, 3]
@@ -406,8 +531,56 @@ def _check():
     assert lines[1] == ["mL", "", "mL", ""], lines[1]
     assert len(lines) == 2 + len(want), len(lines)
     assert lines[-1][0] == "%.4f" % (1.0 * 0.5), lines[-1]   # a minute at 0.5
-    print("ok  %d points decoded, %d peaks, the apex survives thinning"
-          % (s["n"], len(got)))
+    # The fraction table: rows found by their own shape, wells read not
+    # counted out, and a folder with no register file collecting nothing.
+    cuts = [(200.0, 325500.0, 385512.0), (198.5, 385937.0, 445512.0),
+            (198.5, 445962.0, 505512.0)]
+    snake = ["P1-A12", "P1-B12", "P1-B11"]        # the turn at the end of a row
+    with tempfile.TemporaryDirectory() as tmp:
+        d_dir = Path(tmp) / "A1.D"
+        d_dir.mkdir()
+        assert fractions(d_dir) == []             # no collector, no fractions
+        reg = _frac_fixture(cuts, snake)
+        d_dir.joinpath(FRAC_REG).write_bytes(reg)
+        f = fractions(d_dir, flow=0.2)
+        # ... and the same table with a 4.0 in it that is not a fourth row
+        broken = bytearray(reg)
+        struct.pack_into("<d", broken, 0x771 + 90, 4.0)
+        d_dir.joinpath(FRAC_REG).write_bytes(bytes(broken))
+        stray = fractions(d_dir)
+    assert [r["n"] for r in f] == [1, 2, 3], f
+    assert [r["well"] for r in f] == snake, f
+    assert abs(f[0]["start_min"] - 5.425) < 1e-9, f[0]
+    assert abs(f[0]["end_ml"] - 385512.0 / 6e4 * 0.2) < 1e-9, f[0]
+    assert f[0]["ul"] == 200.0 and f[2]["well"] == "P1-B11"
+    assert len(stray) == 3 and stray[0]["start_ml"] is None, stray
+
+    # Two folders fused: a run that stopped and was resumed.  They are put in
+    # the order the instrument stamped them, not the order they were handed
+    # over, and every injection says which part it came from.
+    def _stamped(blob, when):
+        b = bytearray(blob)
+        b[0x957] = len(when)
+        b[0x958:0x958 + 2 * len(when)] = when.encode("utf-16le")
+        return bytes(b)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for part, when in (("stopped", "16-Oct-26, 17:48:08"),
+                           ("resumed", "19-Oct-26, 15:29:31")):
+            inj = Path(tmp) / part / "A1.D"
+            inj.mkdir(parents=True)
+            inj.joinpath("MWD1A.ch").write_bytes(_stamped(d, when))
+        both = run([Path(tmp) / "resumed", Path(tmp) / "stopped"])
+        one = run(Path(tmp) / "stopped")
+    assert [q["name"] for q in both["parts"]] == ["stopped", "resumed"], both["parts"]
+    assert [r["part"] for r in both["runs"]] == ["stopped", "resumed"], both["runs"]
+    assert both["name"] == "stopped +1" and len(both["runs"]) == 2, both["name"]
+    assert one["name"] == "stopped" and len(one["runs"]) == 1, one["name"]
+
+    print("ok  %d points decoded, %d peaks, the apex survives thinning; "
+          "%d fractions, %s to %s; %d folders fuse into %d injections"
+          % (s["n"], len(got), len(f), f[0]["well"], f[-1]["well"],
+             len(both["parts"]), len(both["runs"])))
 
 
 if __name__ == "__main__":

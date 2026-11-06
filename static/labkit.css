@@ -558,6 +558,10 @@ canvas { display: block; }
 }
 .lk-well.has { opacity: 1; border-color: var(--dim); }
 .lk-well.sel { box-shadow: inset 0 0 0 2px var(--accent); opacity: 1; }
+/* Where a dragged well would land.  Dashed, so it reads as a place
+   rather than as a selection. */
+.lk-well.drop { outline: 2px dashed var(--accent); outline-offset: -2px;
+  opacity: 1; }
 /* 24 columns leave no room for a word: the color says it, the tooltip spells it. */
 .lk-plate.dense > div { height: 1.4em; line-height: 1.4em; }
 .lk-plate.dense .lk-well { font-size: 0; padding: 0; }
@@ -572,7 +576,11 @@ canvas { display: block; }
 .plotctl { display: flex; flex-direction: column; gap: 2px; }
 .plotctl .row { margin-bottom: 5px; gap: 6px; }
 .plotctl .row > span { flex: 1 1 auto; }
-.plotctl select, .plotctl input[type=number] { flex: 0 0 122px; width: 122px; }
+/* 122px is the floor, not the width: pinned there, a panel given more room
+   spent all of it on the labels and the selects still cut their text. */
+.plotctl select, .plotctl input[type=number] {
+  flex: 1 1 122px; width: auto; min-width: 122px; max-width: 210px;
+}
 .plotctl input[type=number] { text-align: right; }
 .plotctl .pair { display: flex; gap: 6px; }
 .plotctl .pair > label { flex: 1 1 0; display: flex; align-items: center; gap: 5px; }
@@ -649,3 +657,12 @@ canvas { display: block; }
 }
 .plot-out { min-width: 0; }
 .figure-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+
+/* The name field in the file dialog's save mode: wide enough for a real file
+   name, and beside the button that writes it rather than above the listing. */
+.lk-savename {
+  flex: 0 1 260px;
+  min-width: 140px;
+  font-size: 12px;
+  padding: 4px 7px;
+}

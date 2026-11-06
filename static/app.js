@@ -1525,7 +1525,16 @@
     };
     $('btnSaveSession').onclick = () => guard(async () => {
       if (!S.sess.open) return toast('Open a set of scans first.', 'warn');
-      const r = await req('/api/session/save', 'POST', { folder: S.preset.folder });
+      // Asked, not assumed: the session is a file the person names and puts
+      // where they want it, the way the open dialog already reads one back.
+      const path = await LK.save({
+        ext: '.artstitch.json', exts: ['.artstitch.json'],
+        name: (S.sess.name || 'session') + '.artstitch.json',
+        path: S.sess.folder || '', title: 'Save this session',
+        hint: 'Give the session a file name',
+      });
+      if (!path) return;
+      const r = await req('/api/session/save', 'POST', { path });
       toast('Session saved: ' + home(r.path));
     });
   }

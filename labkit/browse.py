@@ -53,6 +53,22 @@ def _size_of(path: Path) -> int:
         return 0
 
 
+def _matches(name: str, extensions: set[str] | None) -> bool:
+    """
+    Whether a file name ends in one of the suffixes asked for.
+
+    The whole tail, not ``Path.suffix``: an app saves ``aorta 14.asfq.json``
+    and asks for ``.asfq.json`` back, and a single-suffix test sees ``.json``
+    and hides the file from the dialog that just wrote it.  It also means
+    ``.tif`` finds ``field1.ome.tif``, which is what anyone picking TIFFs
+    meant.
+    """
+    if not extensions:
+        return True
+    low = name.lower()
+    return any(low.endswith(e) for e in extensions)
+
+
 def _count_matching(directory: Path, extensions: Sequence[str] | None, cap: int = 400,
                     fields: bool = False, deadline: float | None = None) -> int:
     """How many interesting files a subfolder holds, for the listing's badge.
@@ -78,7 +94,7 @@ def _count_matching(directory: Path, extensions: Sequence[str] | None, cap: int 
             for entry in entries:
                 if n >= cap or (deadline is not None and time.monotonic() > deadline):
                     break
-                if Path(entry.name).suffix.lower() in extensions and entry.is_file():
+                if _matches(entry.name, extensions) and entry.is_file():
                     # ponytail: counts first channels only, so a folder holding
                     # just `ch2` files shows no badge though it lists. Exact
                     # needs every name read first, which is what the cap avoids.
@@ -176,7 +192,7 @@ def listing(
             })
         else:
             suffix = full.suffix.lower()
-            if extensions and suffix not in extensions:
+            if extensions and not _matches(entry.name, extensions):
                 continue
             if len(files) >= limit:
                 truncated += 1

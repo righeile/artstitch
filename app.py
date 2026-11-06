@@ -568,10 +568,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="ArtStitch web app")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT") or 8800))
     parser.add_argument("--state", default=None, help="where presets are kept (default ~/.artstitch)")
+    parser.add_argument("--keep-alive", action="store_true",
+        help="keep running after the last browser window closes")
     args = parser.parse_args(argv)
     if args.state:
         STATE["dir"] = Path(args.state).expanduser()
     print(f"ArtStitch on http://127.0.0.1:{args.port}   (presets in {STATE['dir']})", flush=True)
+    from labkit import lifetime     # stop once the last browser window closes
+    lifetime.flask(app, busy=lambda: any(not j.get("done") for j in list(JOBS.values())))
     app.run(host="127.0.0.1", port=args.port, threaded=True, debug=False)
     return 0
 

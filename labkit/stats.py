@@ -1,7 +1,7 @@
 """Group comparisons, with the p-values a figure is allowed to print.
 
-Mann-Whitney, Wilcoxon signed-rank, Welch and paired t, corrected across the
-whole family a single call produces.  It lives here rather than in one app
+Mann-Whitney, Wilcoxon signed-rank, Welch and paired t -- the last also with
+one variance pooled over every comparison -- corrected across the whole family a single call produces.  It lives here rather than in one app
 because a p-value that appears on a figure and a p-value that appears in a
 table have to be the same number, in every app.
 
@@ -54,7 +54,13 @@ TESTS = {
     "welch": ("Welch t", False),
     "student": ("Student t", False),
     "paired-t": ("paired t", True),
+    "paired-pooled": ("paired t, pooled variance", True),
+    "ratio-pooled": ("ratio t, pooled variance", True),
 }
+
+#: The paired tests that share one variance across the comparisons of a call,
+#: and whether each works on log ratios rather than differences.
+_POOLED = {"paired-pooled": False, "ratio-pooled": True}
 
 #: Other spellings accepted for the same tests.
 _ALIASES = {
@@ -244,6 +250,33 @@ def _run(
     raise ValueError(test)
 
 
+def _pool(results: list["Comparison"], changes: list) -> None:
+    """Each comparison's mean change, tested against one SD from all of them.
+
+    Four genotypes of six cells each give four paired t-tests on 5 df apiece,
+    each guessing the cell-to-cell scatter from its own six cells.  The scatter
+    is the rig's and the cells', not the genotype's, so it is estimated once
+    from every change in the call: the same model as a mixed model with a
+    random intercept per cell, but with an exact t on sum(n - 1) df rather
+    than statsmodels' z, which put p = 1e-7 on six cells.  With one comparison
+    it is the plain paired t.  It assumes the scatter is similar across the
+    comparisons -- on log ratios, that each changes by a similar factor.
+    """
+    # ponytail: assumes each cell sits in one comparison; three time points
+    # tested pairwise reuse cells and overstate the df -- a mixed model then.
+    used = [(r, d) for r, d in zip(results, changes) if d is not None and d.size >= 2]
+    df = sum(d.size - 1 for _, d in used)
+    if not df:
+        return
+    sd = float(np.sqrt(sum(float(((d - d.mean()) ** 2).sum()) for _, d in used) / df))
+    for result, change in used:
+        if sd > 0:
+            result.statistic = float(change.mean() / (sd / np.sqrt(change.size)))
+            result.p_value = float(2 * ss.t.sf(abs(result.statistic), df))
+        note = f"{df} df, variance pooled over {len(used)} comparison(s)"
+        result.message = "; ".join(m for m in (result.message, note) if m)
+
+
 def _pairs_to_compare(levels: list[str], how) -> list[tuple[str, str]]:
     """Which pairs of levels to test, from the ``how`` specification."""
     if isinstance(how, (list, tuple)) and how and isinstance(how[0], (list, tuple)):
@@ -320,6 +353,7 @@ def compare(
     )
 
     results: list[Comparison] = []
+    changes: list = []  # per comparison, for the pooled tests
     for block_name, chunk in blocks:
         levels = [str(v) for v in pd.unique(chunk[group].dropna())]
         if len(levels) < 2:
@@ -340,7 +374,25 @@ def compare(
                 n_pairs, message = None, ""
                 n_a, n_b = a_values.size, b_values.size
 
-            statistic, p, effect, effect_name, note = _run(a_values, b_values, test)
+            if test in _POOLED:
+                # The test itself waits for every comparison: see _pool.
+                statistic = p = float("nan")
+                change, note = a_values - b_values, ""
+                effect, effect_name = _hedges_g(a_values, b_values), "Hedges' g"
+                if a_values.size < 2:
+                    change, note = None, f"too few pairs ({a_values.size}) to test"
+                elif _POOLED[test]:
+                    # One sign throughout: an inward tail current halving is a
+                    # ratio as much as an outward one is.
+                    signs = np.sign(np.concatenate([a_values, b_values]))
+                    if not (signs == signs[0]).all() or signs[0] == 0:
+                        change, note = None, "a ratio needs values of one sign -- use paired t, pooled variance"
+                    else:
+                        change = np.log(np.abs(a_values)) - np.log(np.abs(b_values))
+                        effect, effect_name = float(np.exp(change.mean())), "ratio of geometric means"
+                changes.append(change)
+            else:
+                statistic, p, effect, effect_name, note = _run(a_values, b_values, test)
             results.append(
                 Comparison(
                     group_a=a, group_b=b, n_a=int(n_a), n_b=int(n_b),
@@ -359,6 +411,9 @@ def compare(
 
     if not results:
         return pd.DataFrame(columns=list(Comparison("", "", 0, 0, 0, 0, "").as_dict()))
+
+    if test in _POOLED:
+        _pool(results, changes)
 
     # Correct across every comparison this call produced -- the family is
     # exactly the returned table, which is why it is corrected here and not
@@ -405,14 +460,15 @@ def format_p(
     p_value: float,
     style: str = "auto",
     show_ns: bool = True,
-    floor: float = 1e-4,
+    floor: float = 0.0,
 ) -> str:
     """The string that goes on the figure for one p-value.
 
     ``style``
         ``'stars'``  ``***``, and ``ns`` when it is not significant.
         ``'exact'``  ``p = 0.031``, always the number.
-        ``'auto'``   the number down to *floor*, then ``p < 0.0001``.
+        ``'auto'``   the number; below a *floor* given, ``p < floor``.
+                     No floor by default: the user wants the exact p.
         ``'both'``   ``p = 0.031 *``.
 
     ``'auto'`` is the default because a number is the honest form.  With four
@@ -427,11 +483,13 @@ def format_p(
     if not np.isfinite(p_value):
         return ""
 
-    if p_value < floor:
+    # Each cut is made on the number as it will be printed: 0.000999 is
+    # "1.0e-3" in two figures, which is 0.001 and reads as one.
+    if floor and p_value < floor:
         number = f"p < {floor:g}"
-    elif p_value >= 0.1:
+    elif float(f"{p_value:.3f}") >= 0.1:
         number = f"p = {p_value:.2f}"
-    elif p_value >= 0.001:
+    elif float(f"{p_value:.1e}") >= 0.001:
         number = f"p = {p_value:.3f}"
     else:
         number = f"p = {p_value:.1e}".replace("e-0", "e-")
