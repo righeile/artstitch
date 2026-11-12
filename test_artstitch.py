@@ -30,7 +30,7 @@ import edges
 import export
 import tiles
 from align import _good, align_set, coarse_pair, hand_layout, overlapping_pairs
-from geometry import Frame, rot
+from geometry import Frame, Layout, rot
 from ncc import fast_shape, masked_ncc_map, pack_fft, peak
 from session import Session
 
@@ -667,34 +667,47 @@ def test_align_starts_from_the_tilts_the_scanner_measured():
     assert len(err) == 6 and all(rms < 0.25 and mx < 1.0 for rms, mx in err.values()), err
 
 
-def test_the_bend_at_the_glass_edge_is_trimmed_off_every_scan():
-    """The strip where the paper lifts off the glass is matched on, cut through and painted nowhere."""
+def test_the_side_that_shows_the_lid_is_the_side_that_lay_flat():
+    """Where the sheet ran off the glass there is no lid beyond the paper, and that is the side to cut."""
+    rng = np.random.default_rng(0)
+    img = rng.integers(20, 235, (600, 800, 3)).astype(np.uint8)
+    assert edges.off_glass(img) == {"left", "right", "top", "bottom"}      # all picture: it ran off every side
+    lid = img.copy()
+    lid[:, :40] = 250                                                     # the lid shows along the left
+    assert edges.off_glass(lid) == {"right", "top", "bottom"}
+    lid[-30:] = 18                                                        # and a dark lid along the bottom
+    assert edges.off_glass(lid) == {"right", "top"}
+    assert edges.off_glass(np.full((600, 800, 3), 250, np.uint8)) == set()  # lid everywhere: nothing ran off
+
+
+def test_the_bend_at_the_glass_edge_is_cut_off_before_anything_uses_it():
+    """One gate decides which of a scan's pixels may be matched on, cut through or painted, side by side."""
+    lay = Layout([(1000, 800)], trim=[[10, 20, 30, 40]])             # left, right, top, bottom
+    ux, uy = np.meshgrid(np.arange(1000.0), np.arange(800.0))
+    v = lay.valid_from_maps(0, ux, uy)
+    xs, ys = np.nonzero(v.any(0))[0], np.nonzero(v.any(1))[0]
+    assert (xs[0], 999 - xs[-1], ys[0], 799 - ys[-1]) == (10, 20, 30, 40)
+    assert int(lay.valid_from_maps(0, ux, uy, margin=50).any(0).argmax()) == 50   # never less than the margin
+    assert Layout([(1000, 800)]).valid_from_maps(0, ux, uy).all()                 # no trim: all of it
+
+
+def test_the_trim_is_mm_of_the_sides_that_ran_off_the_glass():
+    """What the user types becomes pixels of each scan, on the sides where the sheet left the glass."""
     paths, _ = scans("grid")
-    band, bent = 60, []
-    for k, p in enumerate(paths):
-        img = tifffile.imread(p)                             # a black band stands for it: the painting never is
-        for sl in (np.s_[:band], np.s_[-band:]):
-            img[sl], img[:, sl] = 0, 0
-        q = os.path.join(TMP, f"bend_{k + 1}.tif")
-        tifffile.imwrite(q, img)
-        bent.append(q)
-
-    def bands_painted(trim_mm: float) -> int:
-        s = Session(bent, tiles.TileStore())
-        s.trim_mm = trim_mm                                  # 60 px at 1200 dpi is 1.27 mm
-        assert abs(max(s.trim_px()) - trim_mm * 1200 / 25.4) < 1e-6       # no dpi in the file: 1200 assumed
-        s.align()
-        (_, _), (w, h), _, _ = s.view("mosaic")
-        img, cov = s.window("mosaic", 0, 0, w, h, 0.08)
-        ys, xs = np.nonzero((img.max(-1) < 0.02) & (cov > 0.5))      # the artwork itself never goes under 10/255
-        src, n = np.c_[xs / 0.08, ys / 0.08], 0
-        for k, (wk, hk) in enumerate(s.layout.sizes):                # count the dark pixels a scan really lies under:
-            u = s.layout.inv(k, src)                                 # the mosaic keeps a stray dark pixel of its own
-            n += int(((u[:, 0] >= 0) & (u[:, 0] <= wk - 1) & (u[:, 1] >= 0) & (u[:, 1] <= hk - 1)).sum())
-        return n
-
-    assert bands_painted(0.0) > 100, "the bands should be there to begin with"
-    assert bands_painted(2.0) == 0, "trimmed, no pixel of the bent strip is painted"
+    found = edges.off_glass
+    try:
+        edges.off_glass = lambda img, **kw: {"left", "bottom"}       # which sides is tested above
+        s = Session(paths, tiles.TileStore())
+        s.trim_mm = 2.0                                              # 94 px at the 1200 dpi assumed of these files
+        assert s.trim_px() == [[2.0 * 1200 / 25.4, 0.0, 0.0, 2.0 * 1200 / 25.4]] * 4
+        assert s.trimmed == {k: ["bottom", "left"] for k in range(4)}
+        s.trim_mm = 300.0                                            # a typo cannot eat the overlap: a tenth, at most
+        assert s.trim_px() == [[420.0, 0.0, 0.0, 420.0]] * 4
+        s.trim_mm = 0.0
+        assert s.trim_px() == [[0.0] * 4] * 4
+        assert Session(paths[:1], tiles.TileStore()).trim_px() == [[0.0] * 4]      # one scan is never cut
+    finally:
+        edges.off_glass = found
 
 
 def test_align_joins_groups_that_no_single_pair_ties():
@@ -1152,11 +1165,11 @@ def test_the_page_can_hand_over_tilts_and_a_trim():
     c = app.app.test_client()
     tilts = [0.0, 11.0, -8.0, 14.0]
     r = c.post("/api/open", json={"paths": paths, "name": "tilted", "tilts": tilts}).get_json()
-    assert r["tilts"] == tilts and r["trim_mm"] == 0.0
+    assert r["tilts"] == tilts and r["trim_mm"] == app.TRIM_MM      # a flatbed set is trimmed unless told not to
     assert c.post("/api/open", json={"paths": paths, "tilts": [1.0]}).status_code >= 400   # one per scan
     assert c.post("/api/session/settings", json={"trim_mm": 99}).get_json()["trim_mm"] == 25.0
     assert c.post("/api/session/settings", json={"trim_mm": 3}).get_json()["trim_mm"] == 3.0
-    assert abs(max(app.STATE["session"].trim_px()) - 3 * 1200 / 25.4) < 1e-6   # no dpi in the file
+    assert abs(np.max(app.STATE["session"].trim_px()) - 3 * 1200 / 25.4) < 1e-6   # no dpi in the file
 
 
 if __name__ == "__main__":

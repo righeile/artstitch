@@ -88,6 +88,28 @@ def _strip_ends(img: np.ndarray, cov: np.ndarray, tau: float = TAU, min_strip: i
     return rr.astype(np.float32), first - 1 + np.clip((tau - d0) / np.maximum(d1 - d0, 1e-6), 0, 1)
 
 
+def off_glass(img: np.ndarray, depth: int = 48, tau: float = TAU) -> set[str]:
+    """The sides of one raw scan where the sheet runs off the glass, on a proxy of it.
+
+    A side that shows the lid beyond the paper had the paper's own edge on the
+    glass, flat and held down by the lid.  A side with no lid is a side the sheet
+    carries on over: there the paper lifts off the glass and the picture bends
+    with it, which is the strip worth cutting before anything is matched.
+    """
+    g = img.astype(np.float32) / (65535.0 if img.dtype == np.uint16 else 255.0)
+    out = set()
+    for s in SIDES:
+        band = np.ascontiguousarray(_orient(g, s)[:, :depth])
+        got = _strip_ends(band, np.ones(band.shape[:2], bool), tau)
+        if got is not None and _fit_line(np.c_[got[1], got[0]].astype(np.float32), 2.0) is not None:
+            continue                                        # the paper's own edge, with the lid beyond it: flat
+        if _mode(band.reshape(-1, 3))[1] < 0.5:
+            out.add(s)                                      # all picture to the edge: the sheet runs off here
+        # else the band is one flat color through and through: lid deeper than the band, and the paper
+        # further in still.  Nothing ran off this side, so nothing is cut.
+    return out
+
+
 def _fit_line(pts: np.ndarray, tol: float):
     """Robust line through points: (direction angle, point, inlier points, rms, nearby points) or None."""
     if len(pts) < 50:

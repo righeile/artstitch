@@ -54,10 +54,13 @@ the histology parts taken out.
    (±3° by default; the box is on the page). Scans that came from ArtStitch Scan
    bring the tilt the scanner measured for each part, and the search starts from
    it, so the ±3° is spent on what the scanner could not know rather than on the
-   tilt it already did. **Trim the scanner edge … mm** cuts that much off every
-   side of every scan before anything is matched, cut through or painted -- at the
-   edge of the glass the paper lifts and the picture bends with it; a few mm is
-   usually enough, and never more than a tenth of the scan is cut. A scan that lay on its side or upside
+   tilt it already did. **Trim where it runs off the glass … mm**
+   (12 by default) cuts that much off a scan's side before anything is matched, cut
+   through or painted, but only the sides where the sheet ran off the glass: there
+   the paper lifts and the picture bends with it. A side that shows the lid beyond
+   the paper had the artwork's own edge lying flat on the glass and keeps every
+   pixel; a set of one scan is never cut, and never more than a tenth of a scan.
+   Checks says what came off which scan. A scan that lay on its side or upside
    down in the scanner is found turned; the result stands the way the **first
    scan** does, and Checks names the scans that lay turned against it. Scans that
    no single pair ties together are joined group against group, the way halves

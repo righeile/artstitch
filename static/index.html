@@ -74,8 +74,8 @@
         <label class="row">Set name <input type="text" id="setName" style="width:220px"></label>
         <label class="row">Rotation search &plusmn;
           <input type="number" id="maxDeg" class="mini" style="width:64px" min="0" max="45" step="0.5" value="3"> &deg;</label>
-        <label class="row" title="The strip cut off every side of every scan before anything is matched or cut: where the paper lifts off the glass at the scanner&apos;s edge and the picture bends with it.">Trim the scanner edge
-          <input type="number" id="trimMm" class="mini" style="width:64px" min="0" max="25" step="0.5" value="0"> mm</label>
+        <label class="row" title="Cut off the sides where the sheet runs off the glass, before anything is matched, cut or painted: there the paper lifts and the picture bends with it. A side that shows the lid beyond the paper had the artwork&apos;s own edge flat on the glass and keeps every pixel, and a single scan is never cut. Checks says what came off which scan.">Trim where it runs off the glass
+          <input type="number" id="trimMm" class="mini" style="width:64px" min="0" max="25" step="0.5" value="12"> mm</label>
         <label class="row">Scanned at
           <input type="number" id="dpiIn" class="mini" style="width:78px" min="1" step="1" placeholder="from file"> dpi</label>
         <span class="spacer"></span>

@@ -263,6 +263,9 @@ def colours():
 # ============================================================================ the open set
 
 
+TRIM_MM = 12.0          # cut off the sides a scan runs off the glass on, unless the page says otherwise
+
+
 @app.route("/api/open", methods=["POST"])
 def open_set():
     b = body()
@@ -271,6 +274,7 @@ def open_set():
         if not os.path.isfile(p):
             raise Problem(f"not a file: {p}")
     s = Session(paths, STORE, (b.get("name") or "").strip() or None)
+    s.trim_mm = TRIM_MM                        # a scan off a flatbed has a bent strip wherever the sheet ran off it
     tilts = b.get("tilts")                     # degrees the paper lay at on the glass, one per scan
     if tilts is not None:
         if len(tilts) != len(paths):

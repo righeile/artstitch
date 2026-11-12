@@ -65,9 +65,11 @@ class Layout:
     def __init__(self, sizes, theta=None, o=None, g: float = 512.0, anchor: int = 0, trim=None):
         self.sizes = [(int(w), int(h)) for w, h in sizes]
         n = len(self.sizes)
-        #: Source pixels cut off every side of each scan before anything is matched, cut or painted: the
-        #: strip where the paper lifts off the glass at the scanner's edge and the picture bends with it.
-        self.trim = np.zeros(n) if trim is None else np.asarray(trim, float).reshape(n).copy()
+        #: Source pixels cut off each scan, per side (left, right, top, bottom, as ``edges.SIDES``), before
+        #: anything is matched, cut or painted: the strip where the sheet runs off the glass, lifts off it,
+        #: and the picture bends with it.  A side whose own paper edge lay on the glass keeps its pixels.
+        tr = np.zeros((n, 4)) if trim is None else np.asarray(trim, float)
+        self.trim = (np.repeat(tr.reshape(n, 1), 4, 1) if tr.ndim < 2 else tr.reshape(n, 4)).copy()
         self.theta = np.zeros(n) if theta is None else np.asarray(theta, float).copy()
         self.o = (np.array([self.centre(k) for k in range(n)]) if o is None
                   else np.asarray(o, float).reshape(n, 2).copy())
@@ -172,8 +174,8 @@ class Layout:
 
     def valid_from_maps(self, k: int, ux: np.ndarray, uy: np.ndarray, margin: float = 0.0):
         w, h = self.sizes[k]
-        m = max(float(margin), float(self.trim[k]))
-        return (ux >= m) & (ux <= w - 1 - m) & (uy >= m) & (uy <= h - 1 - m)
+        le, ri, to, bo = np.maximum(self.trim[k], float(margin))
+        return (ux >= le) & (ux <= w - 1 - ri) & (uy >= to) & (uy <= h - 1 - bo)
 
     # -- persistence -----------------------------------------------------------
 

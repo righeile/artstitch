@@ -587,14 +587,14 @@ def align_set(store, paths, progress: Progress = _quiet, poses=None, max_deg: fl
     a tile keeps if nothing can be matched to it; without them the whole range is searched.
     ``tilts`` (degrees, one per scan) are how the paper lay on the glass: the rotation search starts
     there instead of at 0, so what it still has to find is only what the measurement got wrong.
-    ``trim`` is the strip (source px, one number or one per scan) cut off every side of every scan
+    ``trim`` is the strip (source px, per scan and per side) cut off the sides of each scan
     before anything is matched, cut or painted: the bend where the paper lifts at the glass's edge.
     """
     n = len(paths)
     for k, p in enumerate(paths):
         store.get(p)
     sizes = [(store.get(p).shape[1], store.get(p).shape[0]) for p in paths]
-    lay = Layout(sizes, trim=None if trim is None else np.broadcast_to(np.asarray(trim, float), (n,)))
+    lay = Layout(sizes, trim=trim)
     report: dict = {"edges": [], "tiles": n}
     rads = None if tilts is None else np.radians(np.asarray(tilts, float).reshape(n))
     if n == 1:

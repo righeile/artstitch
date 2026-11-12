@@ -78,7 +78,8 @@ class Session:
         self.report: dict = {}
         self.adj: dict = {}
         self.max_deg = 3.0
-        self.trim_mm = 0.0                              # cut off every side of every scan: the bend at the glass's edge
+        self.trim_mm = 0.0                              # the bend where the sheet runs off the glass, cut before matching
+        self.trimmed: dict[int, list[str]] = {}         # per scan, the sides trim_px last found running off the glass
         self.tilts: list[float] | None = None           # degrees the paper lay at on the glass, if the scanner said
         self.dpi: float | None = None                   # None: from the scans, else 1200
         self.exports: list[dict] = []
@@ -106,15 +107,24 @@ class Session:
             self._cache.clear()
             self.dust = None
 
-    def trim_px(self) -> list[float]:
-        """``trim_mm`` as pixels of each scan, by that scan's own resolution; never more than a tenth of it,
-        so a number typed by mistake cannot eat the overlap the scans are matched on."""
+    def trim_px(self) -> list[list[float]]:
+        """``trim_mm`` as pixels of each scan, per side (left, right, top, bottom), by that scan's own
+        resolution and never more than a tenth of it, so a number typed by mistake cannot eat the overlap
+        the scans are matched on.
+
+        Only the sides where the sheet runs off the glass are cut -- there the paper lifts and the picture
+        bends with it.  A side that shows the lid beyond the paper had the artwork's own edge lying flat on
+        the glass, and keeps every pixel.  A set of one scan is never cut: there is nothing it runs under.
+        """
         out = []
         for k, p in enumerate(self.paths):
             d = (self.info[k] or {}).get("dpi")
             dpi = float(self.dpi or (d[0] if d else 1200.0))
             w, h = self.info[k]["w"], self.info[k]["h"]
-            out.append(min(self.trim_mm * dpi / 25.4, 0.1 * min(w, h)))
+            px = min(self.trim_mm * dpi / 25.4, 0.1 * min(w, h))
+            off = edges.off_glass(self.store.proxy(p, 16)) if px > 0 and len(self.paths) > 1 else set()
+            self.trimmed[k] = sorted(off)
+            out.append([px if s in off else 0.0 for s in edges.SIDES])
         return out
 
     def align(self, progress=_quiet, poses=None, max_deg: float | None = None, seams: bool = True) -> None:
@@ -343,6 +353,10 @@ class Session:
             ref = self.layout.anchor + 1
             add("warn", "; ".join(f"scan{'s' if len(ks) > 1 else ''} {', '.join(ks)} lay turned {deg}°" for deg, ks in sorted(by.items()))
                 + f" in the scanner against scan {ref}: the result stands the way scan {ref} does (turn it on Straighten & crop)")
+        cut = [f"{k + 1} ({', '.join(v)})" for k, v in sorted(self.trimmed.items()) if v] if self.trim_mm else []
+        if cut:
+            add("ok", f"{self.trim_mm:g} mm cut off where the sheet ran off the glass: scan "
+                      + "; scan ".join(cut))
         res = r.get("residual") or {}
         for pair, v in res.items():
             if v["rms"] > RESIDUAL_BAD:
