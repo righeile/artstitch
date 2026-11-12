@@ -158,6 +158,23 @@ exactly as the batch left it. A
 `artstitch_batch_<time>.csv` lists every set. With *if a file already exists* on
 **skip**, running the same folder again only does what is missing.
 
+## Add-ons
+
+ArtStitch can be extended by packages of their own, installed into the same Python
+(`.venv/bin/pip install …`). They are found when ArtStitch starts (the terminal
+says `add-ons: …`), and taken out again by `pip uninstall`. Without one, nothing
+changes. **ArtStitch Scan** ([righeile/artstitch-scan](https://github.com/righeile/artstitch-scan))
+scans the parts of an artwork straight from a flatbed scanner on the Scans page.
+
+An add-on declares a function under the entry-point group `artstitch.addons`;
+it is called once with a `Host` (see `app.py`) that gives it the Flask app to add
+routes to, the job runner, and a place for its own script and stylesheet on the
+page. In the page, `window.ArtStitch` holds what its script may use (opening a
+set, straightening by an angle, following a job), `ArtStitch.slot('scans')` is
+where it puts itself on the Scans page, and every change to the open set is
+announced as the document event `artstitch:session`. One that fails to load is
+reported in the terminal and left out.
+
 ## What to expect
 
 - The scan the others are matched to (the **anchor**) is never resampled: its

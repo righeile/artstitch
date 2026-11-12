@@ -401,6 +401,7 @@
   /** Take a fresh summary from the server and redraw everything that is text. */
   function updateSession(res) {
     S.sess = res;
+    document.dispatchEvent(new CustomEvent('artstitch:session', { detail: res }));   // for add-ons
     $('setLabel').textContent = res.open ? res.name + '  ·  ' + res.paths.length + (res.paths.length === 1 ? ' scan' : ' scans') : 'no set open';
     if (!res.open) return;
     $('setName').value = res.name;
@@ -1687,6 +1688,20 @@
     // the buttons say stitch / plane / result; the viewers are keyed the same way
   }
 
+  // ================================================================= add-ons
+
+  // What an add-on's script may use (the server half is Host in app.py).  Its script loads after this one,
+  // before the page is built: it waits with ArtStitch.ready(fn), then puts itself into a slot.  Every change
+  // to the open set is announced as the document event 'artstitch:session', its summary in event.detail.
+  const readyFns = [];
+  let booted = false;
+  window.ArtStitch = {
+    req, el, toast, fail, guard, recall, remember, base, home, openPaths, showPage, runJob,
+    straighten: (angleDeg) => straighten({ angle_deg: angleDeg, inset: insetValue() }, 'angle set'),
+    slot: (name) => $('addon-' + name),
+    ready: (fn) => { if (booted) fn(); else readyFns.push(fn); },
+  };
+
   async function boot() {
     S.consts = await req('/api/constants');
     wireViews();
@@ -1705,6 +1720,8 @@
     const s = await req('/api/session');
     if (s.open) { openedSession(s); showPage('stitch'); } else showPage('scans');
     restoreBatch().catch(fail);
+    booted = true;
+    readyFns.splice(0).forEach((fn) => { try { fn(); } catch (err) { fail(err); } });
   }
 
   boot().catch(fail);
