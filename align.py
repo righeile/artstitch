@@ -142,7 +142,7 @@ def _turn(lay: Layout, i: int, j: int) -> float:
 def coarse_edges(store, paths, f: int = 32, max_deg: float = 3.0, step_deg: float = 0.5,
                  workers: int = 4, progress: Progress = _quiet, hint: Layout | None = None,
                  pairs: list[tuple[int, int]] | None = None, anywhere: bool = False,
-                 turns: tuple[int, ...] = (0,)) -> list[dict]:
+                 turns: tuple[int, ...] = (0,), tilts=None) -> list[dict]:
     """Every pair (or just ``pairs``), rotation and translation.  Edge maps tile j into tile i's pixels:
     u_i = R(phi) (u_j - C_j) + C_j + f * t   with C_j the center of j's proxy in source px.
 
@@ -150,6 +150,11 @@ def coarse_edges(store, paths, f: int = 32, max_deg: float = 3.0, step_deg: floa
     is what the placement implies (a pair it puts apart is skipped), or, with ``anywhere``, the whole sheet.
     ``turns`` are the quarter turns tried on top (a scan that went into the scanner sideways or upside
     down); the best of them is kept.  Any turn but the plain one searches the whole sheet.
+
+    ``tilts`` (radians, one per scan) are how the paper lay on the glass, as the scanner itself knows it.
+    They say nothing about where a pair overlaps -- the sheet is moved between scans -- only how far one
+    scan is turned against another, so the search runs about ``tilts[j] - tilts[i]`` instead of about 0.
+    A hint is a whole hand placement and says this itself, so it wins.
     """
     n = len(paths)
     sig = [_hp(store, p, f, 2.0) for p in paths]
@@ -165,11 +170,12 @@ def coarse_edges(store, paths, f: int = 32, max_deg: float = 3.0, step_deg: floa
         i, j = ij
         hp_, wp_ = sig[j].shape
         Cj = f * np.array([(wp_ - 1) / 2.0, (hp_ - 1) / 2.0]) + (f - 1) / 2.0
+        phi0 = (_turn(hint, i, j) if hint is not None else
+                0.0 if tilts is None else float(tilts[j] - tilts[i]))
         if hint is None and turns == (0,):
-            r = coarse_pair(sig[i], sig[j], angles)
+            r = coarse_pair(sig[i], sig[j], phi0 + angles)
         else:
-            phi0 = 0.0 if hint is None else _turn(hint, i, j)
-            if anywhere or turns != (0,):
+            if anywhere or turns != (0,) or hint is None:
                 near = ((0.0, 0.0), 0.97 * max(*sig[i].shape, *sig[j].shape))
             else:       # u_i = R(phi0)(u_j - c_j) + R(-theta_i)(o_j - o_i) + c_i, written about C_j
                 t0 = (rot(-hint.theta[i]) @ (hint.o[j] - hint.o[i]) + hint.centre(i)
@@ -573,29 +579,36 @@ def hand_layout(sizes, poses) -> Layout:
     return lay
 
 
-def align_set(store, paths, progress: Progress = _quiet, poses=None, max_deg: float = 3.0) -> tuple[Layout, dict]:
+def align_set(store, paths, progress: Progress = _quiet, poses=None, max_deg: float = 3.0,
+              tilts=None, trim=None) -> tuple[Layout, dict]:
     """Paths of one artwork's scans -> (Layout, report).
 
     ``poses`` are rough hand placements: they say where to look (``coarse_edges``) and are what
     a tile keeps if nothing can be matched to it; without them the whole range is searched.
+    ``tilts`` (degrees, one per scan) are how the paper lay on the glass: the rotation search starts
+    there instead of at 0, so what it still has to find is only what the measurement got wrong.
+    ``trim`` is the strip (source px, one number or one per scan) cut off every side of every scan
+    before anything is matched, cut or painted: the bend where the paper lifts at the glass's edge.
     """
     n = len(paths)
     for k, p in enumerate(paths):
         store.get(p)
     sizes = [(store.get(p).shape[1], store.get(p).shape[0]) for p in paths]
-    lay = Layout(sizes)
+    lay = Layout(sizes, trim=None if trim is None else np.broadcast_to(np.asarray(trim, float), (n,)))
     report: dict = {"edges": [], "tiles": n}
+    rads = None if tilts is None else np.radians(np.asarray(tilts, float).reshape(n))
     if n == 1:
         return lay, report
     hint = hand_layout(sizes, poses) if poses is not None else None
     progress(0.01, "coarse search")
-    edges = coarse_edges(store, paths, max_deg=max_deg, progress=progress, hint=hint)
+    edges = coarse_edges(store, paths, max_deg=max_deg, progress=progress, hint=hint, tilts=rads)
     good = [e for e in edges if _good(e)]
     comp = connected(n, good)
     if len(set(comp)) > 1:          # not all tied together: look everywhere, and at the other quarter turns
         rest = [(i, j) for i in range(n) for j in range(i + 1, n) if comp[i] != comp[j]]
         more = coarse_edges(store, paths, max_deg=max_deg, progress=lambda p, m: progress(0.2, m), hint=hint,
-                            pairs=rest, anywhere=True, turns=(1, 2, 3) if hint is None else (0, 1, 2, 3))
+                            pairs=rest, anywhere=True, turns=(1, 2, 3) if hint is None else (0, 1, 2, 3),
+                            tilts=rads)
         edges, good = edges + more, good + [e for e in more if _good(e)]
         comp = connected(n, good)
     report["edges"] = [{k: (v.tolist() if hasattr(v, "tolist") else v) for k, v in e.items()} for e in edges]

@@ -78,6 +78,8 @@ class Session:
         self.report: dict = {}
         self.adj: dict = {}
         self.max_deg = 3.0
+        self.trim_mm = 0.0                              # cut off every side of every scan: the bend at the glass's edge
+        self.tilts: list[float] | None = None           # degrees the paper lay at on the glass, if the scanner said
         self.dpi: float | None = None                   # None: from the scans, else 1200
         self.exports: list[dict] = []
         self.patches: list[dict] = []                   # {id, pts, r, src}: mosaic px; replaced, never changed in place
@@ -104,12 +106,24 @@ class Session:
             self._cache.clear()
             self.dust = None
 
+    def trim_px(self) -> list[float]:
+        """``trim_mm`` as pixels of each scan, by that scan's own resolution; never more than a tenth of it,
+        so a number typed by mistake cannot eat the overlap the scans are matched on."""
+        out = []
+        for k, p in enumerate(self.paths):
+            d = (self.info[k] or {}).get("dpi")
+            dpi = float(self.dpi or (d[0] if d else 1200.0))
+            w, h = self.info[k]["w"], self.info[k]["h"]
+            out.append(min(self.trim_mm * dpi / 25.4, 0.1 * min(w, h)))
+        return out
+
     def align(self, progress=_quiet, poses=None, max_deg: float | None = None, seams: bool = True) -> None:
         """Poses and meshes (and, by default, the seams) from the scans; ``poses`` starts from the user's."""
         if max_deg is not None:
             self.max_deg = float(max_deg)
         lay, report = align_set(self.store, self.paths, _sliced(progress, 0, 0.8 if seams else 1),
-                                poses=poses, max_deg=self.max_deg)
+                                poses=poses, max_deg=self.max_deg,
+                                tilts=None if poses is not None else self.tilts, trim=self.trim_px())
         self.layout, self.report, self.plan, self.geom, self._sides = lay, clean(report), None, None, None
         self.patches, self._undo, self._retouch = [], [], patch.Retouch()   # they were put on pixels that may have moved
         self._touch()
@@ -368,6 +382,7 @@ class Session:
                                                 int(math.ceil(ext[1][1] - math.floor(ext[0][1]))) + 1],
             "report": {k: v for k, v in self.report.items() if k != "edges"},
             "geom": self.geom, "result_size": self.result_size(), "adj": self.adj, "max_deg": self.max_deg,
+            "trim_mm": self.trim_mm, "tilts": self.tilts,
             "dpi": self.dpi, "exports": self.exports, "ver": self.ver, "key": self.key, "open": True,
             "patched": len(self.patches), "undo": len(self._undo),
             "qc": self.qc() if lay is not None else [],
@@ -494,6 +509,7 @@ class Session:
 
     def to_dict(self) -> dict:
         return clean({"format": FORMAT, "name": self.name, "paths": self.paths, "max_deg": self.max_deg, "dpi": self.dpi,
+                      "trim_mm": self.trim_mm, "tilts": self.tilts,
                       "layout": None if self.layout is None else self.layout.to_dict(), "report": self.report,
                       "plan": None if self.plan is None else self.plan.to_dict(), "geom": self.geom, "adj": self.adj,
                       "patches": self.patches, "exports": self.exports})
@@ -518,6 +534,7 @@ class Session:
             raise FileNotFoundError("scans not found: " + ", ".join(os.path.basename(p) for p in missing))
         s = cls(paths, store, d["name"])
         s.max_deg, s.dpi, s.report = d.get("max_deg", 3.0), d.get("dpi"), d.get("report") or {}
+        s.trim_mm, s.tilts = float(d.get("trim_mm") or 0.0), d.get("tilts")
         s.layout = None if d.get("layout") is None else Layout.from_dict(d["layout"])
         s.plan = None if d.get("plan") is None else Plan.from_dict(d["plan"])
         s.geom, s.adj, s.exports = d.get("geom"), d.get("adj") or {}, d.get("exports") or []

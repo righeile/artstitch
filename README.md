@@ -51,7 +51,13 @@ the histology parts taken out.
    they are; 32-bit ones (floating point, light kept linear as Photoshop keeps it)
    are brought to 16 bits through the scan's color profile.
 2. **Stitch**: every pair is searched for its overlap, rotation included
-   (±3° by default; the box is on the page). A scan that lay on its side or upside
+   (±3° by default; the box is on the page). Scans that came from ArtStitch Scan
+   bring the tilt the scanner measured for each part, and the search starts from
+   it, so the ±3° is spent on what the scanner could not know rather than on the
+   tilt it already did. **Trim the scanner edge … mm** cuts that much off every
+   side of every scan before anything is matched, cut through or painted -- at the
+   edge of the glass the paper lifts and the picture bends with it; a few mm is
+   usually enough, and never more than a tenth of the scan is cut. A scan that lay on its side or upside
    down in the scanner is found turned; the result stands the way the **first
    scan** does, and Checks names the scans that lay turned against it. Scans that
    no single pair ties together are joined group against group, the way halves
@@ -170,7 +176,8 @@ An add-on declares a function under the entry-point group `artstitch.addons`;
 it is called once with a `Host` (see `app.py`) that gives it the Flask app to add
 routes to, the job runner, and a place for its own script and stylesheet on the
 page. In the page, `window.ArtStitch` holds what its script may use (opening a
-set, straightening by an angle, following a job), `ArtStitch.slot('scans')` is
+set -- with the tilt each scan lay at on the glass, if it knows it --
+straightening by an angle, following a job), `ArtStitch.slot('scans')` is
 where it puts itself on the Scans page, and every change to the open set is
 announced as the document event `artstitch:session`. One that fails to load is
 reported in the terminal and left out.

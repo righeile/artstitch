@@ -550,6 +550,9 @@ def scans(kind: str):
               _gt((5400, 4200), -0.5, (2750, 5200), 2), _gt((5400, 4200), 0.3, (6650, 5150), 3)]
         if kind == "turn":
             gt[3] = _gt((4200, 5400), 90.4, (6650, 5150), 3)
+        if kind == "tilted":                 # further apart than the +-3 deg search: only the scanner's tilts find these
+            gt = [_gt((5400, 4200), 0.0, (2800, 2200), 0), _gt((5400, 4200), 11.0, (6700, 2250), 1),
+                  _gt((5400, 4200), -8.0, (2750, 5200), 2), _gt((5400, 4200), 14.0, (6650, 5150), 3)]
         if kind == "quarters":
             gt[2] = _gt((5400, 4200), 179.5, (2750, 5200), 2)
             gt[3] = _gt((4200, 5400), -89.7, (6650, 5150), 3)
@@ -648,6 +651,50 @@ def test_align_with_scans_upside_down_and_on_their_side():
     quarter turns are searched, and the result stands the way scan 1 does."""
     lay, rep = _check_alignment("quarters")
     assert lay.anchor in (0, 1) and rep["turned"] == {"3": 180, "4": 270}, (lay.anchor, rep["turned"])
+
+
+def test_align_starts_from_the_tilts_the_scanner_measured():
+    """Scans lying further apart than the rotation search reaches: on their own they never tie together, and
+    told how the paper lay on the glass -- by eye, a few tenths of a degree out -- they line up like any set."""
+    paths, gt = scans("tilted")
+    store = tiles.TileStore()
+    _, rep = align_set(store, paths)
+    assert rep["disconnected"], "turns this far apart are outside the +-3 deg search; they should not be found"
+    tilts = [math.degrees(g["theta"]) + d for g, d in zip(gt, (0.0, 0.3, -0.25, 0.2))]
+    lay, rep = align_set(store, paths, tilts=tilts)
+    assert not rep["disconnected"], rep["disconnected"]
+    err = _pair_error(lay, gt)
+    assert len(err) == 6 and all(rms < 0.25 and mx < 1.0 for rms, mx in err.values()), err
+
+
+def test_the_bend_at_the_glass_edge_is_trimmed_off_every_scan():
+    """The strip where the paper lifts off the glass is matched on, cut through and painted nowhere."""
+    paths, _ = scans("grid")
+    band, bent = 60, []
+    for k, p in enumerate(paths):
+        img = tifffile.imread(p)                             # a black band stands for it: the painting never is
+        for sl in (np.s_[:band], np.s_[-band:]):
+            img[sl], img[:, sl] = 0, 0
+        q = os.path.join(TMP, f"bend_{k + 1}.tif")
+        tifffile.imwrite(q, img)
+        bent.append(q)
+
+    def bands_painted(trim_mm: float) -> int:
+        s = Session(bent, tiles.TileStore())
+        s.trim_mm = trim_mm                                  # 60 px at 1200 dpi is 1.27 mm
+        assert abs(max(s.trim_px()) - trim_mm * 1200 / 25.4) < 1e-6       # no dpi in the file: 1200 assumed
+        s.align()
+        (_, _), (w, h), _, _ = s.view("mosaic")
+        img, cov = s.window("mosaic", 0, 0, w, h, 0.08)
+        ys, xs = np.nonzero((img.max(-1) < 0.02) & (cov > 0.5))      # the artwork itself never goes under 10/255
+        src, n = np.c_[xs / 0.08, ys / 0.08], 0
+        for k, (wk, hk) in enumerate(s.layout.sizes):                # count the dark pixels a scan really lies under:
+            u = s.layout.inv(k, src)                                 # the mosaic keeps a stray dark pixel of its own
+            n += int(((u[:, 0] >= 0) & (u[:, 0] <= wk - 1) & (u[:, 1] >= 0) & (u[:, 1] <= hk - 1)).sum())
+        return n
+
+    assert bands_painted(0.0) > 100, "the bands should be there to begin with"
+    assert bands_painted(2.0) == 0, "trimmed, no pixel of the bent strip is painted"
 
 
 def test_align_joins_groups_that_no_single_pair_ties():
@@ -1095,6 +1142,21 @@ def test_addons_reach_the_page_and_a_broken_one_is_left_out():
         app.ADDONS.update(saved)
     page = app.app.test_client().get("/").get_data(as_text=True)
     assert 'id="addon-scans"' in page and "/addons/" not in page          # no add-on: the slot stays empty
+
+
+def test_the_page_can_hand_over_tilts_and_a_trim():
+    """What the scanner measured and what the user typed reach the session through the routes."""
+    import app
+
+    paths, _ = scans("grid")
+    c = app.app.test_client()
+    tilts = [0.0, 11.0, -8.0, 14.0]
+    r = c.post("/api/open", json={"paths": paths, "name": "tilted", "tilts": tilts}).get_json()
+    assert r["tilts"] == tilts and r["trim_mm"] == 0.0
+    assert c.post("/api/open", json={"paths": paths, "tilts": [1.0]}).status_code >= 400   # one per scan
+    assert c.post("/api/session/settings", json={"trim_mm": 99}).get_json()["trim_mm"] == 25.0
+    assert c.post("/api/session/settings", json={"trim_mm": 3}).get_json()["trim_mm"] == 3.0
+    assert abs(max(app.STATE["session"].trim_px()) - 3 * 1200 / 25.4) < 1e-6   # no dpi in the file
 
 
 if __name__ == "__main__":

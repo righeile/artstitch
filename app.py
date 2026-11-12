@@ -270,8 +270,14 @@ def open_set():
     for p in paths:
         if not os.path.isfile(p):
             raise Problem(f"not a file: {p}")
-    STATE["session"] = Session(paths, STORE, (b.get("name") or "").strip() or None)
-    return jsonify(STATE["session"].summary())
+    s = Session(paths, STORE, (b.get("name") or "").strip() or None)
+    tilts = b.get("tilts")                     # degrees the paper lay at on the glass, one per scan
+    if tilts is not None:
+        if len(tilts) != len(paths):
+            raise Problem("one tilt per scan, please")
+        s.tilts = [float(v) for v in tilts]
+    STATE["session"] = s
+    return jsonify(s.summary())
 
 
 @app.route("/api/session")
@@ -291,6 +297,8 @@ def session_settings():
         s.dpi = float(b["dpi"]) if b["dpi"] else None
     if "max_deg" in b:
         s.max_deg = max(0.0, min(float(b["max_deg"]), 45.0))
+    if "trim_mm" in b:
+        s.trim_mm = max(0.0, min(float(b["trim_mm"] or 0.0), 25.0))
     return jsonify(s.summary())
 
 
