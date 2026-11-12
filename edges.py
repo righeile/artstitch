@@ -151,7 +151,7 @@ def lines_angle(img: np.ndarray, max_deg: float = 10.0) -> tuple[float, float]:
                            maxLineGap=int(0.02 * n))
     if segs is None:
         return 0.0, 0.0
-    segs = segs[:, 0, :].astype(float)
+    segs = segs.reshape(-1, 4).astype(float)                     # OpenCV 4: (n, 1, 4); OpenCV 5: (n, 4)
     dx, dy = segs[:, 2] - segs[:, 0], segs[:, 3] - segs[:, 1]
     length = np.hypot(dx, dy)
     theta = np.degrees(np.arctan2(dy, dx))
