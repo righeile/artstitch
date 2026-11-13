@@ -29,8 +29,8 @@ import color
 import edges
 import export
 import tiles
-from align import (SURE, _best_per_pair, _good, align_set, coarse_pair, connected, hand_layout,
-                   overlapping_pairs)
+from align import (STIFF, SURE, _bending, _unaffine, _best_per_pair, _good, align_set, coarse_pair, connected,
+                   hand_layout, overlapping_pairs)
 from geometry import Frame, Layout, rot
 from ncc import fast_shape, masked_ncc_map, pack_fft, peak
 from session import Session
@@ -652,6 +652,25 @@ def test_align_with_scans_upside_down_and_on_their_side():
     quarter turns are searched, and the result stands the way scan 1 does."""
     lay, rep = _check_alignment("quarters")
     assert lay.anchor in (0, 1) and rep["turned"] == {"3": 180, "4": 270}, (lay.anchor, rep["turned"])
+
+
+def test_a_tile_cannot_be_wrung_into_a_saddle_for_nothing():
+    """What the mesh may do to a scan, and at what price.  Shifting, turning and stretching it are free:
+    the paper is flat and the scanner is not exact.  Bending it is not, and the twist x*y is a bend --
+    nothing along the tile's middle, growing to every corner.  Priced at dxx and dyy alone it is free,
+    and then a mesh saddles every scan that no match holds, which is most of a scan."""
+    gy, gx = 7, 9
+    L = _bending(gy, gx)
+    y, x = np.mgrid[0:gy, 0:gx]
+    free = {"flat": np.ones_like(x), "shift x": x, "shift y": y, "stretch": 2.0 * x - 3.0 * y}
+    for name, field in free.items():
+        assert np.allclose(L @ field.ravel().astype(float), 0), name
+    for name, field in {"twist": x * y, "bow": x ** 2, "ripple": np.sin(x)}.items():
+        assert np.abs(L @ field.ravel().astype(float)).max() > 0.5, name
+    R = _unaffine(gy, gx)                 # and a bend is priced by its size, not only by how sharp it is
+    for name, field in free.items():
+        assert np.allclose(R @ field.ravel().astype(float), 0), name
+    assert np.abs(R @ (x * y).ravel().astype(float)).max() > 0.5 and STIFF > 0
 
 
 def test_a_weak_match_does_not_hide_a_scan_that_went_on_upside_down():

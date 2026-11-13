@@ -459,6 +459,37 @@ def dense_pair(lay: Layout, store, paths, a: int, b: int, f: int, T: int, S: int
     return X, o[:, 2:4] * f, o[:, 4]
 
 
+#: How dearly the mesh holds its scan's shape.  The paper is flat and stiff: shifting, turning and
+#: stretching a scan is free, and bending it is not.  Curvature alone prices only how sharply it bends,
+#: not how far, and over a scan a gentle bow reaches millimetres for almost nothing -- so what a bend
+#: costs is its own size, away from the affine part.  Past 3e-2 the seams themselves start to open.
+STIFF = 1e-2
+
+
+def _bending(gy: int, gx: int):
+    """Thin plate: d2/dx2, d2/dy2 and the twist d2/dxdy, which weighs as much as the two of them.
+
+    Leave the twist out and a tile may be wrung into a saddle -- nothing along its middle, growing to
+    every corner -- for free, which is just what a mesh does where no match holds it.  What stays free
+    is what should: the affine part, so the scan may still be shifted, turned and stretched.
+    """
+    d1 = lambda m: sp.diags([-1.0, 1.0], [0, 1], shape=(m - 1, m))
+    d2 = lambda m: sp.diags([1.0, -2.0, 1.0], [0, 1, 2], shape=(m - 2, m))
+    return sp.vstack([sp.kron(sp.identity(gy), d2(gx)), sp.kron(d2(gy), sp.identity(gx)),
+                      math.sqrt(2.0) * sp.kron(d1(gy), d1(gx))])
+
+
+def _unaffine(gy: int, gx: int):
+    """How far a mesh's nodes stand from the affine field that fits them best, as a matrix.
+
+    A scan may be shifted, turned and stretched as freely as this says nothing: those are the affine
+    fields, and the scanner is not exact.  Everything else is the paper bending, and this is its size.
+    """
+    y, x = np.mgrid[0:gy, 0:gx]
+    M = np.c_[np.ones(gy * gx), x.ravel() - (gx - 1) / 2.0, y.ravel() - (gy - 1) / 2.0]
+    return sp.csr_matrix(np.eye(gy * gx) - M @ np.linalg.pinv(M))
+
+
 def solve_mesh(lay: Layout, sets: list[tuple], f: int, sigma_c: float = 3.0, robust: int = 3) -> None:
     """One sparse least squares for the meshes' update, added to ``lay.D``.
 
@@ -492,13 +523,9 @@ def solve_mesh(lay: Layout, sets: list[tuple], f: int, sigma_c: float = 3.0, rob
     rhs = np.vstack(rhs)
     w = np.concatenate(wts)
 
-    Ls = []
-    for k in free:                                               # curvature of each mesh
-        gy, gx = lay.D[k].shape[:2]
-        d2 = lambda m: sp.diags([1, -2, 1], [0, 1, 2], shape=(m - 2, m))
-        Ls.append(sp.vstack([sp.kron(sp.identity(gy), d2(gx)), sp.kron(d2(gy), sp.identity(gx))]))
-    L = sp.block_diag(Ls, format="csr") / sigma_c
-    reg = L.T @ L + sp.identity(N) * 1e-6
+    L = sp.block_diag([_bending(*lay.D[k].shape[:2]) for k in free], format="csr") / sigma_c
+    R = sp.block_diag([_unaffine(*lay.D[k].shape[:2]) for k in free], format="csr")
+    reg = L.T @ L + (R.T @ R) * STIFF + sp.identity(N) * 1e-6
 
     rob = np.ones(r0)
     for _ in range(robust):
