@@ -79,7 +79,7 @@ class Session:
         self.adj: dict = {}
         self.max_deg = 3.0
         self.trim_mm = 0.0                              # the bend where the sheet runs off the glass, cut before matching
-        self.trimmed: dict[int, list[str]] = {}         # per scan, the sides trim_px last found running off the glass
+        self.trimmed: dict[int, list[str]] = {}         # per scan, the sides the last alignment cut (edges.SIDES)
         self.tilts: list[float] | None = None           # degrees the paper lay at on the glass, if the scanner said
         self.dpi: float | None = None                   # None: from the scans, else 1200
         self.exports: list[dict] = []
@@ -107,24 +107,17 @@ class Session:
             self._cache.clear()
             self.dust = None
 
-    def trim_px(self) -> list[list[float]]:
-        """``trim_mm`` as pixels of each scan, per side (left, right, top, bottom), by that scan's own
-        resolution and never more than a tenth of it, so a number typed by mistake cannot eat the overlap
-        the scans are matched on.
-
-        Only the sides where the sheet runs off the glass are cut -- there the paper lifts and the picture
-        bends with it.  A side that shows the lid beyond the paper had the artwork's own edge lying flat on
-        the glass, and keeps every pixel.  A set of one scan is never cut: there is nothing it runs under.
+    def trim_px(self) -> list[float]:
+        """``trim_mm`` as pixels of each scan, by that scan's own resolution and never more than a tenth
+        of it, so a number typed by mistake cannot eat the overlap the scans are matched on.  Which sides
+        it comes off is ``align.trim_sides``' business, once the poses say where each scan's neighbours are.
         """
         out = []
         for k, p in enumerate(self.paths):
             d = (self.info[k] or {}).get("dpi")
             dpi = float(self.dpi or (d[0] if d else 1200.0))
             w, h = self.info[k]["w"], self.info[k]["h"]
-            px = min(self.trim_mm * dpi / 25.4, 0.1 * min(w, h))
-            off = edges.off_glass(self.store.proxy(p, 16)) if px > 0 and len(self.paths) > 1 else set()
-            self.trimmed[k] = sorted(off)
-            out.append([px if s in off else 0.0 for s in edges.SIDES])
+            out.append(min(self.trim_mm * dpi / 25.4, 0.1 * min(w, h)))
         return out
 
     def align(self, progress=_quiet, poses=None, max_deg: float | None = None, seams: bool = True) -> None:
@@ -135,6 +128,7 @@ class Session:
                                 poses=poses, max_deg=self.max_deg,
                                 tilts=None if poses is not None else self.tilts, trim=self.trim_px())
         self.layout, self.report, self.plan, self.geom, self._sides = lay, clean(report), None, None, None
+        self.trimmed = {k: [s for s, v in zip(edges.SIDES, lay.trim[k]) if v > 0] for k in range(len(self.paths))}
         self.patches, self._undo, self._retouch = [], [], patch.Retouch()   # they were put on pixels that may have moved
         self._touch()
         if seams:

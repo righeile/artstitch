@@ -55,12 +55,13 @@ the histology parts taken out.
    bring the tilt the scanner measured for each part, and the search starts from
    it, so the ±3° is spent on what the scanner could not know rather than on the
    tilt it already did. **Trim where it runs off the glass … mm**
-   (12 by default) cuts that much off a scan's side before anything is matched, cut
-   through or painted, but only the sides where the sheet ran off the glass: there
-   the paper lifts and the picture bends with it. A side that shows the lid beyond
-   the paper had the artwork's own edge lying flat on the glass and keeps every
-   pixel; a set of one scan is never cut, and never more than a tenth of a scan.
-   Checks says what came off which scan. A scan that lay on its side or upside
+   (12 by default) cuts that much off a scan before the overlaps are matched in
+   detail, the seams cut or a pixel painted, on the sides where the sheet ran off
+   the glass and lifted off it, the picture bending with it. Those are the sides
+   another scan stands behind, which is what makes them a seam, so the neighbour
+   supplies what comes off. The artwork's own outer edges lay flat under the lid
+   and keep every pixel: nothing could give them back. A set of one scan is never
+   cut, and never more than a tenth of a scan. Checks says what came off which. A scan that lay on its side or upside
    down in the scanner is found turned; the result stands the way the **first
    scan** does, and Checks names the scans that lay turned against it. Scans that
    no single pair ties together are joined group against group, the way halves

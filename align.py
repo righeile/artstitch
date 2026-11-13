@@ -579,6 +579,30 @@ def hand_layout(sizes, poses) -> Layout:
     return lay
 
 
+def trim_sides(lay: Layout, px: np.ndarray) -> None:
+    """Cut ``px`` off each scan on the sides where the sheet ran off the glass.
+
+    A sheet larger than the glass lifts where it carries on over the edge, and the picture bends
+    with it.  Those are the sides another scan covers -- that is what makes them a seam -- so the
+    strip is cut and the neighbour supplies those pixels instead.  A side where the artwork's own
+    edge lay on the glass has no scan standing behind it: it lay flat, and keeps every pixel.
+
+    Never more than a third of how far a neighbour on that side reaches in, and the shallowest
+    neighbour sets it: the strip two scans have in common is what they are matched on, and where
+    that is a sliver (two pairs joined corner to corner, say) cutting it costs more than the bend.
+    """
+    for a, b in overlapping_pairs(lay):
+        for k, j in ((a, b), (b, a)):
+            d = (lay.o[j] - lay.o[k]) @ rot(lay.theta[k])            # the neighbour, in k's own frame
+            s = (1 if d[0] > 0 else 0) if abs(d[0]) > abs(d[1]) else (3 if d[1] > 0 else 2)
+            w, h = lay.sizes[k]
+            P = lay.rigid_inv(k, lay.rigid(j, lay.corners(j)))        # the neighbour's own corners, in k's frame
+            lo, hi = np.maximum(P.min(0), 0), np.minimum(P.max(0), [w - 1, h - 1])
+            deep = max(hi[s // 2] - lo[s // 2], 0.0)                  # how far this neighbour reaches in, px
+            cut = min(px[k], deep / 3.0)                              # left, right, top, bottom
+            lay.trim[k, s] = cut if lay.trim[k, s] == 0 else min(lay.trim[k, s], cut)
+
+
 def align_set(store, paths, progress: Progress = _quiet, poses=None, max_deg: float = 3.0,
               tilts=None, trim=None) -> tuple[Layout, dict]:
     """Paths of one artwork's scans -> (Layout, report).
@@ -587,14 +611,15 @@ def align_set(store, paths, progress: Progress = _quiet, poses=None, max_deg: fl
     a tile keeps if nothing can be matched to it; without them the whole range is searched.
     ``tilts`` (degrees, one per scan) are how the paper lay on the glass: the rotation search starts
     there instead of at 0, so what it still has to find is only what the measurement got wrong.
-    ``trim`` is the strip (source px, per scan and per side) cut off the sides of each scan
-    before anything is matched, cut or painted: the bend where the paper lifts at the glass's edge.
+    ``trim`` is the strip (source px, one per scan) cut off the sides where the sheet ran off the
+    glass and the picture bends with it -- the sides another scan covers, so nothing is lost.  It
+    is decided once the poses are known, and holds for the mesh, the seams and the render.
     """
     n = len(paths)
     for k, p in enumerate(paths):
         store.get(p)
     sizes = [(store.get(p).shape[1], store.get(p).shape[0]) for p in paths]
-    lay = Layout(sizes, trim=trim)
+    lay = Layout(sizes)
     report: dict = {"edges": [], "tiles": n}
     rads = None if tilts is None else np.radians(np.asarray(tilts, float).reshape(n))
     if n == 1:
@@ -633,6 +658,8 @@ def align_set(store, paths, progress: Progress = _quiet, poses=None, max_deg: fl
     for k in range(n):
         lay.reset_mesh(k)
     report["disconnected"] = groups if len(groups) > 1 else []
+    if trim is not None:
+        trim_sides(lay, np.asarray(trim, float).reshape(n))
     report["residual"] = {f"{a + 1}-{b + 1}": v for (a, b), v in refine(lay, store, paths, progress=progress).items()}
     a = lay.anchor
     turn = {k: round(_turn(lay, a, k) / (math.pi / 2)) % 4 for k in next(g for g in groups if a in g)}

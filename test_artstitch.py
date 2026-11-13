@@ -667,19 +667,6 @@ def test_align_starts_from_the_tilts_the_scanner_measured():
     assert len(err) == 6 and all(rms < 0.25 and mx < 1.0 for rms, mx in err.values()), err
 
 
-def test_the_side_that_shows_the_lid_is_the_side_that_lay_flat():
-    """Where the sheet ran off the glass there is no lid beyond the paper, and that is the side to cut."""
-    rng = np.random.default_rng(0)
-    img = rng.integers(20, 235, (600, 800, 3)).astype(np.uint8)
-    assert edges.off_glass(img) == {"left", "right", "top", "bottom"}      # all picture: it ran off every side
-    lid = img.copy()
-    lid[:, :40] = 250                                                     # the lid shows along the left
-    assert edges.off_glass(lid) == {"right", "top", "bottom"}
-    lid[-30:] = 18                                                        # and a dark lid along the bottom
-    assert edges.off_glass(lid) == {"right", "top"}
-    assert edges.off_glass(np.full((600, 800, 3), 250, np.uint8)) == set()  # lid everywhere: nothing ran off
-
-
 def test_the_bend_at_the_glass_edge_is_cut_off_before_anything_uses_it():
     """One gate decides which of a scan's pixels may be matched on, cut through or painted, side by side."""
     lay = Layout([(1000, 800)], trim=[[10, 20, 30, 40]])             # left, right, top, bottom
@@ -691,23 +678,26 @@ def test_the_bend_at_the_glass_edge_is_cut_off_before_anything_uses_it():
     assert Layout([(1000, 800)]).valid_from_maps(0, ux, uy).all()                 # no trim: all of it
 
 
-def test_the_trim_is_mm_of_the_sides_that_ran_off_the_glass():
-    """What the user types becomes pixels of each scan, on the sides where the sheet left the glass."""
-    paths, _ = scans("grid")
-    found = edges.off_glass
-    try:
-        edges.off_glass = lambda img, **kw: {"left", "bottom"}       # which sides is tested above
-        s = Session(paths, tiles.TileStore())
-        s.trim_mm = 2.0                                              # 94 px at the 1200 dpi assumed of these files
-        assert s.trim_px() == [[2.0 * 1200 / 25.4, 0.0, 0.0, 2.0 * 1200 / 25.4]] * 4
-        assert s.trimmed == {k: ["bottom", "left"] for k in range(4)}
-        s.trim_mm = 300.0                                            # a typo cannot eat the overlap: a tenth, at most
-        assert s.trim_px() == [[420.0, 0.0, 0.0, 420.0]] * 4
-        s.trim_mm = 0.0
-        assert s.trim_px() == [[0.0] * 4] * 4
-        assert Session(paths[:1], tiles.TileStore()).trim_px() == [[0.0] * 4]      # one scan is never cut
-    finally:
-        edges.off_glass = found
+def test_the_trim_comes_off_the_sides_a_neighbour_stands_behind():
+    """The sides where the sheet ran off the glass are the sides another scan covers, and only those:
+    where the artwork's own edge lay flat on the glass, no scan could give those pixels back."""
+    paths, _ = scans("grid")                                 # 2 x 2: every part has two inner sides
+    s = Session(paths, tiles.TileStore())
+    s.trim_mm = 2.0                                          # 94 px at the 1200 dpi assumed of these files
+    assert s.trim_px() == [2.0 * 1200 / 25.4] * 4
+    s.align(seams=False)
+    cut = {k: sorted(v) for k, v in s.trimmed.items()}
+    assert cut == {0: ["bottom", "right"], 1: ["bottom", "left"], 2: ["right", "top"], 3: ["left", "top"]}, cut
+    assert [sorted(row) for row in s.layout.trim.tolist()] == [[0.0, 0.0] + [94.48818897637796] * 2] * 4
+    s.trim_mm = 300.0                                        # a typo cannot eat the overlap: a tenth, at most
+    assert s.trim_px() == [420.0] * 4
+    s.trim_mm = 0.0
+    s.align(seams=False)
+    assert s.trimmed == {k: [] for k in range(4)} and not s.layout.trim.any()
+    one = Session(paths[:1], tiles.TileStore())
+    one.trim_mm = 2.0
+    one.align(seams=False)
+    assert one.trimmed == {0: []}                            # one scan: nothing stands behind any side of it
 
 
 def test_align_joins_groups_that_no_single_pair_ties():
