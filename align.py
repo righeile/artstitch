@@ -134,6 +134,21 @@ def _good(e: dict) -> bool:
     return e["q"] >= 0.25 and e["ratio"] >= 1.10 and e["overlap"] >= 0.05
 
 
+#: A match no longer worth doubting.  True overlaps score q of .6 and up and false ones .43 and down on
+#: every real set measured; the bar sits between them, well clear of ``_good``'s deliberately low one.
+SURE = 0.5
+
+
+def _best_per_pair(edges: list[dict]) -> list[dict]:
+    """The good edges, one per pair: a pair searched again at the other quarter turns has two."""
+    best: dict[tuple[int, int], dict] = {}
+    for e in edges:
+        k = (e["i"], e["j"])
+        if _good(e) and e["q"] > best.get(k, {"q": -1.0})["q"]:
+            best[k] = e
+    return list(best.values())
+
+
 def _turn(lay: Layout, i: int, j: int) -> float:
     """How far tile j is turned against tile i in a placement, in (-pi, pi]."""
     return (lay.theta[j] - lay.theta[i] + math.pi) % (2 * math.pi) - math.pi
@@ -627,15 +642,18 @@ def align_set(store, paths, progress: Progress = _quiet, poses=None, max_deg: fl
     hint = hand_layout(sizes, poses) if poses is not None else None
     progress(0.01, "coarse search")
     edges = coarse_edges(store, paths, max_deg=max_deg, progress=progress, hint=hint, tilts=rads)
-    good = [e for e in edges if _good(e)]
-    comp = connected(n, good)
-    if len(set(comp)) > 1:          # not all tied together: look everywhere, and at the other quarter turns
-        rest = [(i, j) for i in range(n) for j in range(i + 1, n) if comp[i] != comp[j]]
+    good = _best_per_pair(edges)
+    # Whether anything is still missing is asked of the matches that are plainly real, not of every one
+    # that cleared the bar: a marginal false pair is enough to tie two halves of a set together, and then
+    # a scan that went on the glass upside down is never looked for.  Both are cheap to ask again about.
+    sure = connected(n, [e for e in good if e["q"] >= SURE])
+    if len(set(sure)) > 1:          # not all tied together: look everywhere, and at the other quarter turns
+        rest = [(i, j) for i in range(n) for j in range(i + 1, n) if sure[i] != sure[j]]
         more = coarse_edges(store, paths, max_deg=max_deg, progress=lambda p, m: progress(0.2, m), hint=hint,
                             pairs=rest, anywhere=True, turns=(1, 2, 3) if hint is None else (0, 1, 2, 3),
                             tilts=rads)
-        edges, good = edges + more, good + [e for e in more if _good(e)]
-        comp = connected(n, good)
+        edges, good = edges + more, _best_per_pair(edges + more)
+    comp = connected(n, good)
     report["edges"] = [{k: (v.tolist() if hasattr(v, "tolist") else v) for k, v in e.items()} for e in edges]
     if hint is None:                # upright the way scan 1 is: the anchor is the best-connected scan turned like it
         turned = quarter_turns(n, good)

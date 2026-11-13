@@ -29,7 +29,8 @@ import color
 import edges
 import export
 import tiles
-from align import _good, align_set, coarse_pair, hand_layout, overlapping_pairs
+from align import (SURE, _best_per_pair, _good, align_set, coarse_pair, connected, hand_layout,
+                   overlapping_pairs)
 from geometry import Frame, Layout, rot
 from ncc import fast_shape, masked_ncc_map, pack_fft, peak
 from session import Session
@@ -651,6 +652,20 @@ def test_align_with_scans_upside_down_and_on_their_side():
     quarter turns are searched, and the result stands the way scan 1 does."""
     lay, rep = _check_alignment("quarters")
     assert lay.anchor in (0, 1) and rep["turned"] == {"3": 180, "4": 270}, (lay.anchor, rep["turned"])
+
+
+def test_a_weak_match_does_not_hide_a_scan_that_went_on_upside_down():
+    """Sunflowers: parts 3 and 4 lay on the glass upside down, and the other quarter turns are only searched
+    when something is still missing.  Pair 1-4 scored q .43 at the plain turn -- enough to pass as a match,
+    nowhere near enough to believe -- so the set looked whole, the turn was never looked for, and the two
+    halves were stitched 180 degrees out.  The question is asked of the matches that are plainly real."""
+    e = lambda i, j, q: {"i": i, "j": j, "q": q, "ratio": 2.0, "overlap": 0.4}
+    edges = [e(0, 1, 1.0), e(2, 3, 1.0), e(0, 3, 0.43)]
+    assert all(_good(x) for x in edges)                          # every one of them clears the bar
+    assert len(set(connected(4, edges))) == 1                    # and together they make the set look whole
+    assert len(set(connected(4, [x for x in edges if x["q"] >= SURE]))) == 2      # the sure ones: two halves
+    kept = _best_per_pair(edges + [e(0, 3, 0.87), e(1, 2, 0.10)])  # the turn found; 1-4 now has two matches
+    assert sorted((x["i"], x["j"], x["q"]) for x in kept) == [(0, 1, 1.0), (0, 3, 0.87), (2, 3, 1.0)]
 
 
 def test_align_starts_from_the_tilts_the_scanner_measured():
