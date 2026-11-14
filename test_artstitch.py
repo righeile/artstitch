@@ -501,21 +501,21 @@ def _art(h: int, w: int, seed: int = 1) -> np.ndarray:
     return out
 
 
-def _warp(u, k):
+def _warp(u, k, bow=1.0):
     """A smooth displacement per scan (cockling), analytic so it continues past the scan's edge."""
     x, y, ph = u[..., 0], u[..., 1], 1.3 * k
-    return np.stack([5.0 * np.sin(y / 2300 + ph) + 3.0 * np.sin(x / 3100 + 2 * ph),
-                     4.0 * np.sin(x / 2700 + 3 * ph) + 3.0 * np.cos(y / 3600 + ph)], -1)
+    return bow * np.stack([5.0 * np.sin(y / 2300 + ph) + 3.0 * np.sin(x / 3100 + 2 * ph),
+                           4.0 * np.sin(x / 2700 + 3 * ph) + 3.0 * np.cos(y / 3600 + ph)], -1)
 
 
 def _pos(g, u):
-    return (u - g["c"]) @ rot(g["theta"]).T + g["o"] + _warp(u, g["k"])
+    return (u - g["c"]) @ rot(g["theta"]).T + g["o"] + _warp(u, g["k"], g["bow"])
 
 
 def _inv(g, X):
     u = (X - g["o"]) @ rot(g["theta"]) + g["c"]
     for _ in range(6):
-        u = (X - g["o"] - _warp(u, g["k"])) @ rot(g["theta"]) + g["c"]
+        u = (X - g["o"] - _warp(u, g["k"], g["bow"])) @ rot(g["theta"]) + g["c"]
     return u
 
 
@@ -527,10 +527,32 @@ def _cut(art, g, cs=32):
     return cv2.remap(art, np.ascontiguousarray(X[..., 0]), np.ascontiguousarray(X[..., 1]), cv2.INTER_LINEAR)
 
 
-def _gt(size, theta_deg, o, k):
+def _gt(size, theta_deg, o, k, bow=1.0):
     w, h = size
     return {"size": size, "theta": math.radians(theta_deg), "o": np.array(o, float), "k": k,
-            "c": np.array([(w - 1) / 2, (h - 1) / 2])}
+            "c": np.array([(w - 1) / 2, (h - 1) / 2]), "bow": bow}
+
+
+def _art_error(lay, gt, n: int = 36):
+    """(rms, max) px between the stitched artwork and the flat painting the scans were cut from.
+
+    Not whether the scans agree with each other -- that is ``_pair_error``, and scans can agree
+    beautifully on a shape the painting never had.  Each scan was cut through a bow of its own, and
+    this asks what shape came out, allowing the mosaic the one similarity its frame is free to pick.
+    """
+    A, B = [], []
+    for k, g in enumerate(gt):
+        w, h = g["size"]
+        u = np.stack(np.meshgrid(np.linspace(0, w - 1, n), np.linspace(0, h - 1, n)), -1).reshape(-1, 2)
+        A.append(_pos(g, u))                                      # where that paint sits on the painting
+        B.append(lay.fwd(k, u))                                   # where the stitch put it
+    A, B = np.vstack(A), np.vstack(B)
+    one, nil = np.ones((len(A), 1)), np.zeros((len(A), 1))
+    M = np.block([[A[:, :1], -A[:, 1:2], one, nil], [A[:, 1:2], A[:, :1], nil, one]])
+    c, *_ = np.linalg.lstsq(M, np.r_[B[:, 0], B[:, 1]], rcond=None)
+    r = np.hypot(*(B - np.c_[c[0] * A[:, 0] - c[1] * A[:, 1] + c[2],
+                             c[1] * A[:, 0] + c[0] * A[:, 1] + c[3]]).T)
+    return float(np.sqrt((r ** 2).mean())), float(r.max())
 
 
 @lru_cache(maxsize=None)
@@ -554,6 +576,8 @@ def scans(kind: str):
         if kind == "tilted":                 # further apart than the +-3 deg search: only the scanner's tilts find these
             gt = [_gt((5400, 4200), 0.0, (2800, 2200), 0), _gt((5400, 4200), 11.0, (6700, 2250), 1),
                   _gt((5400, 4200), -8.0, (2750, 5200), 2), _gt((5400, 4200), 14.0, (6650, 5150), 3)]
+        if kind == "cockled":            # the same four, each bowing six times as far: ~1 mm of paper
+            gt = [_gt(g["size"], math.degrees(g["theta"]), g["o"], g["k"], bow=6.0) for g in gt]
         if kind == "quarters":
             gt[2] = _gt((5400, 4200), 179.5, (2750, 5200), 2)
             gt[3] = _gt((4200, 5400), -89.7, (6650, 5150), 3)
@@ -591,7 +615,9 @@ def _check_alignment(kind: str, poses_of=None, pairs: int = 6):
     paths, gt = scans(kind)
     lay, rep = align_set(tiles.TileStore(), paths, poses=poses_of(gt) if poses_of else None)
     a = lay.anchor
-    assert lay.theta[a] == 0 and np.array_equal(lay.o[a], lay.centre(a)) and not lay.D[a].any(), "the anchor moved"
+    # Its *pose* is the gauge: the mosaic stands the way that scan lay, so this one is not turned or shifted.
+    # Its mesh is not pinned -- every sheet bows and none is declared flat -- so ``lay.D[a]`` moves.
+    assert lay.theta[a] == 0 and np.array_equal(lay.o[a], lay.centre(a)), "the anchor moved"
     assert not rep["disconnected"], rep["disconnected"]
     err = _pair_error(lay, gt)
     assert len(err) == pairs, err
@@ -652,6 +678,24 @@ def test_align_with_scans_upside_down_and_on_their_side():
     quarter turns are searched, and the result stands the way scan 1 does."""
     lay, rep = _check_alignment("quarters")
     assert lay.anchor in (0, 1) and rep["turned"] == {"3": 180, "4": 270}, (lay.anchor, rep["turned"])
+
+
+def test_the_stitch_keeps_the_painting_s_shape_and_not_the_anchor_s():
+    """Scans that agree with each other can still agree on a shape the painting never had.
+
+    Every sheet bows its own way on the glass, and a mesh that holds one scan still gives the artwork
+    that scan's bow: the seams close to a tenth of a pixel while the picture is tens of pixels out of
+    shape, and nothing on screen shows it.  With no scan held, what the meshes have in common is what
+    ``STIFF`` prices, so the bow they share goes to nothing and the mosaic comes out the average of
+    the scans.  Measured against the flat painting, up to the one similarity the frame
+    is free to pick; pinned to the anchor instead, the same scans give 16.8 rms and 44.2 px.
+    """
+    paths, gt = scans("cockled")                    # a millimetre of cockle: six times the other kinds'
+    lay, _ = align_set(tiles.TileStore(), paths)
+    err = _pair_error(lay, gt)
+    assert all(rms < 0.25 for rms, _ in err.values()), err          # the seams close either way
+    rms, mx = _art_error(lay, gt)
+    assert rms < 14.0 and mx < 32.0, (rms, mx)
 
 
 def test_a_tile_cannot_be_wrung_into_a_saddle_for_nothing():
@@ -800,7 +844,10 @@ def _stitched() -> Session:
     return _session["s"]
 
 
-def test_session_stitches_without_errors_and_keeps_the_anchor_bit_exact():
+def test_session_stitches_without_errors_and_draws_the_anchor_through_one_map():
+    """Every scan is resampled, the anchor with them: its mesh moves like the rest, because
+    the sheet that happened to go on the glass first is no flatter than the others.  Once, though --
+    what comes out is that scan put through the layout's single map, not drawn and drawn again."""
     s = _stitched()
     assert not [q for q in s.qc() if q["level"] == "error"], s.qc()
     lay = s.layout
@@ -813,7 +860,10 @@ def test_session_stitches_without_errors_and_keeps_the_anchor_bit_exact():
     cx, cy = (int(v) for v in lay.o[a])
     tile = s.store.get(s.paths[a]).rgb
     got = out[cy - 100 - y0:cy + 100 - y0, cx - 100 - x0:cx + 100 - x0]
-    assert np.array_equal(got, tile[cy - 100:cy + 100, cx - 100:cx + 100]), "the anchor was resampled"
+    ux, uy = lay.tile_maps(a, Frame(1.0, (cx - 100, cy - 100)), (200, 200))
+    ref = cv2.remap(tile, ux, uy, cv2.INTER_LINEAR)                # the same map, applied once, by hand
+    d = np.abs(got.astype(int) - ref.astype(int))                  # .04 of a level; a second pass blurs by ones
+    assert d.mean() < 0.3, ("the anchor was resampled twice", d.mean(), d.max())
 
 
 def test_layers_are_the_scans_with_masks_and_the_patches_above():
@@ -895,8 +945,9 @@ def test_straighten_keep_and_level_line_direction():
 
 
 def test_turning_the_result_moves_whole_pixels():
-    """A quarter turn is a permutation of the same pixels (the anchor's still bit-exact), clockwise for +1, with the
-    crop turned along; straightening again keeps the turn; four turns are none."""
+    """A quarter turn is the same pixels over again, clockwise for +1, with the crop turned along;
+    straightening again keeps the turn; four turns are none.  Within a level: every scan is resampled,
+    so the turned frame's sampling points are the same places reached by a different arithmetic."""
     s = _stitched()
     s.geom = s.default_geom()
     g0, a = s.geom, s.layout.anchor
@@ -908,7 +959,8 @@ def test_turning_the_result_moves_whole_pixels():
     W, H = s.result_size()
     s.turn(1)
     assert s.geom["quarter"] == 1 and s.result_size() == (H, W)
-    assert np.array_equal(grab(export.turn_rect(win, g0, 1)), np.rot90(before, -1)), "not a clockwise turn of the same pixels"
+    d = np.abs(grab(export.turn_rect(win, g0, 1)).astype(int) - np.rot90(before, -1).astype(int))
+    assert d.mean() < 0.1, ("not a clockwise turn of the same pixels", d.mean(), d.max())
     for _ in range(3):
         s.turn(1)
     assert s.geom["quarter"] == 0 and s.geom["crop"] == g0["crop"]
@@ -1007,7 +1059,8 @@ def test_patch_paints_out_a_speck_without_blurring():
         path = s.save(os.path.join(TMP, "patch", "p.artstitch.json"))
         s2 = Session.load(path, s.store)
         (_, win2) = at()
-        assert s2.patches == s.patches and np.array_equal(s2.render("result", *win2, 1.0)[0], s.render("result", *win2, 1.0)[0])
+        assert s2.patches == s.patches                     # the mesh is written to 1/1000 px, the anchor's too
+        assert np.allclose(s2.render("result", *win2, 1.0)[0], s.render("result", *win2, 1.0)[0], atol=1 / 255)
         # turned: healed again in the new frame, still over the speck
         s.turn(-1)
         (vx, vy), win = at()
@@ -1116,15 +1169,19 @@ def test_dust_found_is_patched_and_not_found_again():
             cv2.circle(tile.rgb, (x, y), 3, (v, v, v), -1)
         s._touch()
         s.find_dust()
-        hit = lambda: [it for it in s.dust["items"] if it["score"] >= 12 and
-                       min(np.hypot(*(np.mean(it["pts"], 0) - (x - cx + 300, y - cy + 200))) for x, y in ((cx - 150, cy - 60), (cx + 120, cy + 70))) < 6]
+        # The strongest find over each speck, if any.  Not every find: a scan is resampled into the
+        # mosaic through Lanczos, which rings around an edge as hard as a drawn disc of 0 or 255, and
+        # the ring is picked up too -- a faint halo of the other colour, a quarter of the speck's score.
+        near = lambda it, c: np.hypot(*(np.mean(it["pts"], 0) - c)) < 6
+        hit = lambda: [max((it for it in s.dust["items"] if it["score"] >= 12 and near(it, c)),
+                           key=lambda it: it["score"], default=None) for c in ((150, 140), (420, 270))]
         got = hit()
-        assert len(got) == 2, got
+        assert [it and it["kind"] for it in got] == ["dark", "light"], s.dust["items"]
         undo = len(s._undo)
         s.edit_patches("add", "result", strokes=[{"pts": it["pts"], "r": it["r"]} for it in got])
         assert len(s.patches) == 2 and len(s._undo) == undo + 1
         s.find_dust()
-        assert not hit(), hit()
+        assert not any(hit()), hit()
         s.straighten(angle_deg=0.3)
         assert s.dust is None
     finally:

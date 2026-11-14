@@ -7,7 +7,9 @@ Stages (each one narrows what the next has to search):
    the whole range or, given a rough hand placement, around what it implies.
 2. ``solve_rigid``   poses from those pairwise results (max spanning tree, then
    a robust least squares over every edge); the best-connected tile is the
-   anchor and is never resampled or warped.
+   anchor, and the mosaic stands the way it does.  Its pixels are still bent
+   with everyone else's: a scan is not flat, and the one that happens to be the
+   anchor has no better claim to the artwork's shape than the rest.
 3. ``refine``        1/16 -> 1/2 scale: dense patch matching between the
    renditions of every overlapping pair, then one sparse least squares for the
    per-tile displacement meshes.  Repeated, because each solve is linear but the
@@ -465,7 +467,6 @@ def dense_pair(lay: Layout, store, paths, a: int, b: int, f: int, T: int, S: int
 #: costs is its own size, away from the affine part.  Past 3e-2 the seams themselves start to open.
 STIFF = 1e-2
 
-
 def _bending(gy: int, gx: int):
     """Thin plate: d2/dx2, d2/dy2 and the twist d2/dxdy, which weighs as much as the two of them.
 
@@ -490,13 +491,25 @@ def _unaffine(gy: int, gx: int):
     return sp.csr_matrix(np.eye(gy * gx) - M @ np.linalg.pinv(M))
 
 
+#: What holds the meshes' one free direction.  With no scan pinned, adding the same field to every
+#: mesh leaves every pair exactly where it was, and this decides which of those the solve picks: the
+#: smallest, so the bend they share goes to nothing.  It is a numerical floor as much as a choice --
+#: under 1e-5 the normal equations are singular to the factorisation and a weakly tied pair wanders
+#: tens of pixels; over 1e-2 it starts damping the bend the matches did ask for.
+GAUGE = 3e-4
+
+
 def solve_mesh(lay: Layout, sets: list[tuple], f: int, sigma_c: float = 3.0, robust: int = 3) -> None:
     """One sparse least squares for the meshes' update, added to ``lay.D``.
 
     ``sets`` are (a, b, X, delta, ncc).  Row: dD_a(X) - dD_b(X) = delta.
     """
-    n = len(lay.sizes)
-    free = [k for k in range(n) if k != lay.anchor]
+    # Every scan's mesh moves and none is held at zero.  A sheet bows a little differently every time,
+    # so pinning one would hand the artwork that scan's own bow -- which the seams, agreeing with each
+    # other to a fraction of a pixel, would never show.  Left this way, what the meshes have in common
+    # is what ``STIFF`` prices, so the bend they share goes to nothing and the artwork comes out the
+    # average of the scans rather than a copy of whichever one happened to be the anchor.
+    free = list(range(len(lay.sizes)))
     off, N = {}, 0
     for k in free:
         off[k] = N
@@ -509,8 +522,6 @@ def solve_mesh(lay: Layout, sets: list[tuple], f: int, sigma_c: float = 3.0, rob
         m = len(X)
         w = ncc ** 2 / (0.15 * f) ** 2
         for k, sign in ((a, 1.0), (b, -1.0)):
-            if k == lay.anchor:
-                continue
             idx, wgt = lay.weights(k, X)
             rows.append(np.repeat(np.arange(r0, r0 + m), 4))
             cols.append((off[k] + idx).ravel())
@@ -525,7 +536,7 @@ def solve_mesh(lay: Layout, sets: list[tuple], f: int, sigma_c: float = 3.0, rob
 
     L = sp.block_diag([_bending(*lay.D[k].shape[:2]) for k in free], format="csr") / sigma_c
     R = sp.block_diag([_unaffine(*lay.D[k].shape[:2]) for k in free], format="csr")
-    reg = L.T @ L + (R.T @ R) * STIFF + sp.identity(N) * 1e-6
+    reg = L.T @ L + (R.T @ R) * STIFF + sp.identity(N) * GAUGE
 
     rob = np.ones(r0)
     for _ in range(robust):
