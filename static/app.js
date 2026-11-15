@@ -407,6 +407,7 @@
     $('setName').value = res.name;
     $('maxDeg').value = res.max_deg;
     $('trimMm').value = res.trim_mm || 0;
+    $('noWarp').checked = res.warp === false;
     $('dpiIn').value = res.dpi || '';
     renderStitchSide(); renderGeom(); syncCropFields(); planUpdate();
   }
@@ -461,7 +462,7 @@
     const dpi = parseFloat($('dpiIn').value);
     updateSession(await req('/api/session/settings', 'POST',
       { name: $('setName').value, dpi: Number.isFinite(dpi) ? dpi : 0, max_deg: parseFloat($('maxDeg').value) || 0,
-        trim_mm: parseFloat($('trimMm').value) || 0 }));
+        trim_mm: parseFloat($('trimMm').value) || 0, warp: !$('noWarp').checked }));
   }
 
   function doStitch(poses) {
@@ -1711,7 +1712,7 @@
     buildScans(); buildStraighten(); buildPatch(); buildColour(); buildExport(); buildBatch();
     $('btnStitch').onclick = () => doStitch();
     $('btnArrange').onclick = arrange;
-    ['setName', 'maxDeg', 'trimMm', 'dpiIn'].forEach((id) => { $(id).onchange = () => S.sess.open && guard(saveSettings); });
+    ['setName', 'maxDeg', 'trimMm', 'dpiIn', 'noWarp'].forEach((id) => { $(id).onchange = () => S.sess.open && guard(saveSettings); });
     LK.mountThemeToggle('.topbar');
     document.addEventListener('labkit:theme', () => { Object.values(views).forEach((v) => v.draw()); drawHist(); drawCurve(); });
 

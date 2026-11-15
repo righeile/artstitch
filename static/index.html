@@ -78,6 +78,8 @@
           <input type="number" id="trimMm" class="mini" style="width:64px" min="0" max="25" step="0.5" value="12"> mm</label>
         <label class="row">Scanned at
           <input type="number" id="dpiIn" class="mini" style="width:78px" min="1" step="1" placeholder="from file"> dpi</label>
+        <label class="row" title="Place the scans without bending them, the way Photoshop&apos;s Reposition does. A sheet does not lie flat on the glass, so each scan keeps its own bow and the seams close to several pixels instead of a fraction of one: the cut hides that in paint and shows it where a hard edge in the picture crosses a seam. Leave it off unless you have a reason not to warp.">
+          <input type="checkbox" id="noWarp"> Reposition only, do not bend the scans</label>
         <span class="spacer"></span>
         <button class="ghost" id="btnArrange">Place scans by hand&hellip;</button>
         <button class="primary" id="btnStitch">Stitch</button>

@@ -580,18 +580,24 @@ def overlapping_pairs(lay: Layout, min_frac: float = 0.04) -> list[tuple[int, in
     return out
 
 
-def refine(lay: Layout, store, paths, levels=LEVELS, progress: Progress = _quiet, workers: int = 6) -> dict:
+def refine(lay: Layout, store, paths, levels=LEVELS, progress: Progress = _quiet, workers: int = 6,
+           mesh: bool = True) -> dict:
     """Coarse to fine dense matching + mesh solves.  Returns the final pair residuals.
 
     A pair that first overlaps enough to be matched at a fine level (a narrow strip) can still be far off when the
-    last level looks, and what it reports is that look: then it looks again after the solve."""
+    last level looks, and what it reports is that look: then it looks again after the solve.
+
+    Without ``mesh`` nothing moves after the first level's rigid refit, so the levels in between have nothing
+    to improve: the first places the scans and the last measures what that placement left."""
+    if not mesh:
+        levels = [levels[0], levels[-1]]
     total = sum(it for *_, it in levels)
     step_i = 0
     last: dict = {}
     for li, (f, T, S, iters) in enumerate(levels):
         sigma = 4.0 if f >= 4 else 6.0
         it = 0
-        while it < iters or (li == len(levels) - 1 and it < iters + 2
+        while it < iters or (mesh and li == len(levels) - 1 and it < iters + 2
                              and max((v["rms"] for v in last.values()), default=0.0) > SETTLED_PX):
             pairs = overlapping_pairs(lay)
             with ThreadPoolExecutor(workers) as ex:
@@ -613,7 +619,8 @@ def refine(lay: Layout, store, paths, levels=LEVELS, progress: Progress = _quiet
                 for k in range(len(lay.sizes)):
                     lay.reset_mesh(k)
                 continue
-            solve_mesh(lay, sets, f)
+            if mesh:
+                solve_mesh(lay, sets, f)
     return last
 
 
@@ -657,7 +664,7 @@ def trim_sides(lay: Layout, px: np.ndarray) -> None:
 
 
 def align_set(store, paths, progress: Progress = _quiet, poses=None, max_deg: float = 3.0,
-              tilts=None, trim=None) -> tuple[Layout, dict]:
+              tilts=None, trim=None, mesh: bool = True) -> tuple[Layout, dict]:
     """Paths of one artwork's scans -> (Layout, report).
 
     ``poses`` are rough hand placements: they say where to look (``coarse_edges``) and are what
@@ -667,6 +674,10 @@ def align_set(store, paths, progress: Progress = _quiet, poses=None, max_deg: fl
     ``trim`` is the strip (source px, one per scan) cut off the sides where the sheet ran off the
     glass and the picture bends with it -- the sides another scan covers, so nothing is lost.  It
     is decided once the poses are known, and holds for the mesh, the seams and the render.
+
+    Without ``mesh`` the scans are only turned and shifted, never bent -- Photoshop's "Reposition".  Each
+    sheet then keeps the bow it had on the glass, which the graph cut hides in paint and shows wherever a
+    hard edge crosses a seam; the report's residuals say by how much.
     """
     n = len(paths)
     for k, p in enumerate(paths):
@@ -716,7 +727,7 @@ def align_set(store, paths, progress: Progress = _quiet, poses=None, max_deg: fl
     report["disconnected"] = groups if len(groups) > 1 else []
     if trim is not None:
         trim_sides(lay, np.asarray(trim, float).reshape(n))
-    report["residual"] = {f"{a + 1}-{b + 1}": v for (a, b), v in refine(lay, store, paths, progress=progress).items()}
+    report["residual"] = {f"{a + 1}-{b + 1}": v for (a, b), v in refine(lay, store, paths, progress=progress, mesh=mesh).items()}
     a = lay.anchor
     turn = {k: round(_turn(lay, a, k) / (math.pi / 2)) % 4 for k in next(g for g in groups if a in g)}
     report["turned"] = {str(k + 1): 90 * t for k, t in turn.items() if t} if hint is None else {}

@@ -1238,6 +1238,27 @@ def test_addons_reach_the_page_and_a_broken_one_is_left_out():
     assert 'id="addon-scans"' in page and "/addons/" not in page          # no add-on: the slot stays empty
 
 
+def test_reposition_only_turns_and_shifts_and_the_session_remembers_it():
+    """Photoshop's Reposition.  No scan is bent, so each keeps the bow it had on the glass and the seams
+    carry it: a twentieth of a pixel becomes ten.  That is the mode, not a better stitch -- the graph cut
+    hides it in paint and shows it where a hard edge of the picture crosses a seam, so Checks says so."""
+    paths, gt = scans("grid")
+    lay, rep = align_set(tiles.TileStore(), paths, mesh=False)
+    assert not any(np.any(D) for D in lay.D), "a scan was bent"
+    worst = max(rms for rms, _ in _pair_error(lay, gt).values())
+    assert worst > 4.0, worst                                     # with the mesh: 0.05 px
+    assert max(v["rms"] for v in rep["residual"].values()) > 4.0  # and the report does not hide it
+
+    s = Session(paths, tiles.TileStore())
+    s.warp = False
+    s.align()                                                      # with the seams: ``qc`` waits for them
+    assert not s.layout.D[0].any() and any("Reposition" in q["msg"] for q in s.qc())
+    with tempfile.TemporaryDirectory() as d:
+        f = s.save(os.path.join(d, "r.artstitch.json"))
+        assert Session.load(f, tiles.TileStore()).warp is False    # and it is not lost on the way back
+    assert Session(paths, tiles.TileStore()).warp is True          # a new set bends, as it always did
+
+
 def test_the_page_can_hand_over_tilts_and_a_trim():
     """What the scanner measured and what the user typed reach the session through the routes."""
     import app
@@ -1250,6 +1271,7 @@ def test_the_page_can_hand_over_tilts_and_a_trim():
     assert c.post("/api/open", json={"paths": paths, "tilts": [1.0]}).status_code >= 400   # one per scan
     assert c.post("/api/session/settings", json={"trim_mm": 99}).get_json()["trim_mm"] == 25.0
     assert c.post("/api/session/settings", json={"trim_mm": 3}).get_json()["trim_mm"] == 3.0
+    assert c.post("/api/session/settings", json={"warp": False}).get_json()["warp"] is False
     assert abs(np.max(app.STATE["session"].trim_px()) - 3 * 1200 / 25.4) < 1e-6   # no dpi in the file
 
 

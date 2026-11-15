@@ -303,6 +303,8 @@ def session_settings():
         s.max_deg = max(0.0, min(float(b["max_deg"]), 45.0))
     if "trim_mm" in b:
         s.trim_mm = max(0.0, min(float(b["trim_mm"] or 0.0), 25.0))
+    if "warp" in b:
+        s.warp = bool(b["warp"])
     return jsonify(s.summary())
 
 
