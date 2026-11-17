@@ -737,12 +737,22 @@
   };
 
   /* Four clicks round something rectangular in the picture: the photographs are flattened again onto that
-     plane, so the picture comes out square however the camera was held.  Drag the last corner to place it. */
+     plane, so the picture comes out square however the camera was held.  A corner is placed where the button
+     comes up, and one already placed can be picked up and moved; the fourth sets it going. */
   const cornersTool = {
-    pts: [],
-    cursor() { return 'crosshair'; },
-    down(p) { this.pts.push([p.x, p.y]); views.plane.drawOverlay(); return true; },
-    move(p) { this.pts[this.pts.length - 1] = [p.x, p.y]; views.plane.drawOverlay(); },
+    pts: [], at: -1,
+    near(p) {
+      const v = views.plane;
+      return this.pts.findIndex(([x, y]) => Math.hypot(x - p.x, y - p.y) * v.z < v.px(10));
+    },
+    cursor(p) { return this.near(p) >= 0 ? 'move' : 'crosshair'; },
+    down(p) {
+      this.at = this.near(p);
+      if (this.at < 0) this.at = this.pts.push([p.x, p.y]) - 1;
+      views.plane.drawOverlay();
+      return true;
+    },
+    move(p) { this.pts[this.at] = [p.x, p.y]; views.plane.drawOverlay(); },
     up() {
       if (this.pts.length < 4) return toast(4 - this.pts.length + ' more corner' + (this.pts.length === 3 ? '' : 's') + ' to mark.');
       const corners = this.pts, w = parseFloat($('sizeW').value), h = parseFloat($('sizeH').value);
