@@ -5,7 +5,8 @@ about a megapixel (its cost is superlinear; 4 MP did not finish in ten
 minutes).  So the cut is made at ~1 MP, then refined level by level: at each
 finer scale only a narrow band around the current boundary of each neighboring
 pair is re-cut, the rest of both tiles being pinned by the masks.  The result is
-a label map (which tile owns which pixel) at 1/4 scale.
+a label map (which tile owns which pixel) at 1/4 scale.  Paint one photograph
+shows glared and another shows clean is given to the clean one (``_glare``).
 
 Rendering.  Every output pixel is one interpolation of one or two source
 pixels: ``Layout.tile_maps`` composes pose, mesh and output frame into a single
@@ -47,6 +48,7 @@ FIELD_PX = 1024                              # mosaic px between correction node
 VIG_MAX = 0.47                               # most a corner may be lifted: exp(0.47) = 1.6x
 VIG_RIDGE = 0.2                              # how much overlap it takes before a falloff is believed
 NODE_PX = max(round(FIELD_PX / SEAM_FIELD_F), 1) * SEAM_FIELD_F         # the spacing actually used, a whole 1/f px
+GLARE_LEVELS = 12.0                          # whiter than the other tile by this much in every channel (of 255): maybe glare
 
 
 @dataclass
@@ -268,6 +270,44 @@ def fit_field(imgs, valids, f: int, hw) -> np.ndarray:
     return np.round(D, 5)                    # the precision it is saved at, so an opened set renders identically
 
 
+def _glare(a: np.ndarray, b: np.ndarray, m: np.ndarray) -> np.ndarray:
+    """Where tile ``a`` shows glare that ``b`` does not, inside ``m`` (both valid; gains already matched).
+
+    A reflection of the lamp in varnish adds white, the same amount in every channel, and it moves with
+    the camera, so the next photograph has that paint clean.  A shadow multiplies instead.  So each patch
+    where ``a`` is brighter in every channel is judged whole, by which of the two explains it better --
+    ``b`` plus white, or ``b`` scaled -- and only glare is kept.  A misregistered edge differs too, but as a
+    line a pixel or two wide, so a patch must be five pixels across to be judged at all.  On grey paint the two cannot be told
+    apart and the patch is left alone: the low band (``fit_field``) is what takes out a broad shadow.
+    """
+    d = a - b
+    cand = (m & (d.min(-1) > GLARE_LEVELS)).astype(np.uint8)
+    cand = cv2.morphologyEx(cand, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    if not cand.any():
+        return cand > 0
+    n, lab = cv2.connectedComponents(cand, connectivity=8)
+    add = ((d - d.mean(-1, keepdims=True)) ** 2).sum(-1) + 1.0          # what is left after white, and a level of noise
+    mul = (a * a).sum(-1) - (a * b).sum(-1) ** 2 / np.maximum((b * b).sum(-1), 1e-6)      # ... after scaling b
+    glare = np.bincount(lab.ravel(), add.ravel(), n) < 0.5 * np.bincount(lab.ravel(), mul.ravel(), n)
+    glare[0] = False
+    return (cv2.dilate(glare[lab].astype(np.uint8), np.ones((3, 3), np.uint8)) > 0) & m     # and its rim
+
+
+def _unglared(imgs, valids) -> list[np.ndarray]:
+    """Each tile's valid mask without the glare that another tile shows that paint free of.  The darkest
+    tile at a pixel is never brighter than another, so every pixel keeps at least one tile."""
+    out = [v.copy() for v in valids]
+    for a in range(len(imgs)):
+        for b in range(len(imgs)):
+            m = valids[a] & valids[b]
+            rows, cols = np.flatnonzero(m.any(1)), np.flatnonzero(m.any(0))
+            if a == b or len(rows) == 0:
+                continue
+            sl = np.s_[rows[0]:rows[-1] + 1, cols[0]:cols[-1] + 1]
+            out[a][sl] &= ~_glare(imgs[a][sl], imgs[b][sl], m[sl])
+    return out
+
+
 def _cut(imgs, corners, masks, cost: str = "COST_COLOR") -> list[np.ndarray]:
     """OpenCV graph-cut seams: returns the masks after the cut (mutually exclusive)."""
     finder = cv2.detail_GraphCutSeamFinder(cost)
@@ -311,11 +351,12 @@ def _refine(lay: Layout, store, paths, lab: np.ndarray, f: int, ext: np.ndarray,
         hw = (y1 - y0, x1 - x0)
         sub = lab[y0:y1, x0:x1]
         bnd = band[y0:y1, x0:x1]
-        imgs, masks = [], []
+        imgs, vs = [], []
         for t in (i, j):
             im, v = render_low(lay, store, paths, t, f, fr, hw)
             imgs.append(shade(lay, t, im, gains[t], vig, fr, hw))
-            masks.append((((sub == t) | bnd) & v).astype(np.uint8) * 255)
+            vs.append(v)
+        masks = [(((sub == t) | bnd) & u).astype(np.uint8) * 255 for t, u in zip((i, j), _unglared(imgs, vs))]   # glare judged whole, not in the band
         try:
             ri, rj = _cut(imgs, [(0, 0), (0, 0)], masks, "COST_COLOR_GRAD")
         except cv2.error:
@@ -354,7 +395,7 @@ def plan_seams(lay: Layout, store, paths, progress: Progress = _quiet, even: boo
     gains = fit_gains(lay, imgs, valids)
     imgs = [im * gains[k] for k, im in enumerate(imgs)]
 
-    res = _cut(imgs, [(0, 0)] * n, [(v * 255).astype(np.uint8) for v in valids])
+    res = _cut(imgs, [(0, 0)] * n, [(v * 255).astype(np.uint8) for v in _unglared(imgs, valids)])
     lab = np.full(hw, 255, np.uint8)
     for k, m in enumerate(res):
         lab[m > 0] = k
@@ -377,7 +418,7 @@ def plan_seams(lay: Layout, store, paths, progress: Progress = _quiet, even: boo
     fr0 = Frame(scale=1.0 / SEAM_FIELD_F, origin=ext[0])
     R = [render_low(lay, store, paths, k, SEAM_FIELD_F, fr0, hw0) for k in range(n)]
     low = [shade(lay, k, r[0], gains[k], vig, fr0, hw0) for k, r in enumerate(R)]
-    fld = fit_field(low, [r[1] for r in R], SEAM_FIELD_F, hw0)
+    fld = fit_field(low, _unglared(low, [r[1] for r in R]), SEAM_FIELD_F, hw0)      # glare is no slow difference
     return Plan(f, ext[0].copy(), lab, gains, fld, vig)
 
 

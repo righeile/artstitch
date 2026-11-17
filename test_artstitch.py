@@ -1420,6 +1420,39 @@ def test_the_low_band_is_blended_across_a_cut_and_the_detail_is_not():
     assert np.abs(same).max() < 1e-3, np.abs(same).max()
 
 
+def test_a_seam_keeps_out_of_glare():
+    """A lamp's reflection in varnish moves with the camera, so the photograph next door has that paint clean
+    and the cut gives it that one -- here where, left to the colors alone, it goes round the glare the
+    other way, the glare touching the edge of the clean photograph.  A shadow is not glare: it multiplies."""
+    art = _art(1500, 3500, 5).astype(np.float32)
+    yy, xx = np.mgrid[0:1500, 0:3500]
+    blob = np.exp(-((xx - 1560.0) ** 2 + (yy - 750.0) ** 2) / (2 * 40.0 ** 2))[..., None]
+    paths = []
+    for k, (x0, im) in enumerate([(0, np.clip(art + 120 * blob, 0, 255)), (1500, art)]):
+        paths.append(os.path.join(TMP, f"glare_{k + 1}.tif"))
+        tifffile.imwrite(paths[-1], im[:, x0:x0 + 2000].astype(np.uint8))
+    lay = Layout([(2000, 1500), (2000, 1500)])
+    lay.o[1] += [1500.0, 0.0]
+    shown = (blob[..., 0] > 0.3) & (xx >= 1500 + 40) & (xx < 2000 - 40)            # both photographs valid
+
+    def glared_tile_owns(levels):
+        was, compose.GLARE_LEVELS = compose.GLARE_LEVELS, levels
+        try:
+            plan = compose.plan_seams(lay, tiles.TileStore(), paths, even=False)
+        finally:
+            compose.GLARE_LEVELS = was
+        i = np.round((yy[shown] - plan.ext0[1]) / plan.f).astype(int)
+        j = np.round((xx[shown] - plan.ext0[0]) / plan.f).astype(int)
+        return float((plan.labels[i, j] == 0).mean())
+
+    assert glared_tile_owns(1e9) > 0.9                  # the colors alone: round it the other way, the glare kept
+    assert glared_tile_owns(compose.GLARE_LEVELS) == 0.0
+    paint, sh, m = art[:, 1500:2000], blob[:, 1500:2000], np.ones((1500, 500), bool)
+    assert not compose._glare(paint, paint * (1 - 0.4 * sh), m).any()              # the other one shadowed
+    assert compose._glare(paint + 60 * sh, paint, m)[sh[..., 0] > 0.5].all()     # this one glared
+    assert not compose._glare(paint, np.roll(paint, 2, axis=1), m).any()          # 2 px off: edges in lines, no patch
+
+
 def test_a_falloff_shared_by_every_frame_is_found_and_taken_back_out():
     """What a photograph and a microscope field do and a flatbed does not: darken towards the corners, the
     same way every frame.  Three frames, the third wide enough that its middle lies over the others' edges,

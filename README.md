@@ -233,6 +233,11 @@ reported in the terminal and left out.
   eight real photographs agree to 0.78 px rms with it taken out, 1.13 without.
   The `graf` set and a newspaper shot in four parts gain 2-3 % from a bend and
   are left unbent.
+- Glare: where one photograph shows the lamp's reflection that another shows
+  clean, the seam gives that paint to the clean one. It must be whiter in every
+  channel by the same amount, and a patch rather than a line (a misregistered
+  edge is a line). The matte newspaper has 0.1 % of its overlap flagged, the
+  `graf` wall none.
 - The shape a marked rectangle is given: measured on eight real photographs of a
   chessboard whose true proportions are known, within 3 % and usually within 1 %
   when the file carries the lens's focal length, and typically 3 % but once 25 %
