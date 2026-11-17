@@ -978,6 +978,48 @@ def test_marking_the_corners_squares_the_picture():
     assert abs(s.dpi - res["rectangle"][0] / (280 / 25.4)) < 0.2       # the artwork measured gives the set its dpi
 
 
+def test_a_phone_photograph_stands_up_and_squares_on_its_own():
+    """A phone held upright stores the picture lying down and says so in the file, with the lens as a 35 mm equivalent
+    in the Exif block.  The photograph opens upright, the lens is read from the file, and one photograph alone is
+    flattened and squared: taken from one side, its corners hold one vanishing point only, and the lens gives the shape."""
+    from PIL import Image
+    W, H = 1200, 1600                                                           # upright, as it is looked at
+    f = 24 / 43.27 * math.hypot(W, H)                                           # 24 mm, reckoned on the diagonal
+    art = _art(1000, 750, 4)
+    K = np.array([[f, 0, (W - 1) / 2], [0, f, (H - 1) / 2], [0, 0, 1.0]])
+    R = cv2.Rodrigues(np.float64([0, np.radians(25), 0]))[0]                  # from one side, the camera level
+    cam = K @ np.c_[R[:, 0], R[:, 1], [0, 0, 0.92 * f] - R @ [375, 500, 0]]    # art px -> photo px
+    up = cv2.warpPerspective(art, cam, (W, H), flags=cv2.INTER_CUBIC)
+    p = os.path.join(TMP, "phone", "IMG_0001.JPG")
+    os.makedirs(os.path.dirname(p))
+    ex = Image.Exif()
+    ex[274] = 6                                                                 # turn a quarter clockwise to look at
+    ex.get_ifd(0x8769)[41989] = 24
+    Image.fromarray(np.ascontiguousarray(np.rot90(up))).save(p, quality=95, exif=ex)
+    assert (tiles.probe(p)["w"], tiles.probe(p)["h"]) == (W, H)
+    rgb = tiles.decode(p).rgb
+    assert rgb.shape[:2] == (H, W) and np.abs(rgb.astype(float) - up).mean() < 4, "the photograph opened on its side"
+    assert abs(flatten.focal_px(p) / f - 1) < 1e-6
+
+    store = tiles.TileStore()
+    new, rep = flatten.flatten(store, [p], os.path.join(TMP, "phone", "flattened"))
+    s = Session(new, store, "phone")
+    s.photos, s.trim_mm = [p], 0.0
+    s.cam = {"reference": 0, "h": rep["h"], "origin": rep["origin"], "dir": os.path.dirname(new[0]), "k1": rep["k1"]}
+    s.auto()
+    corners = np.float64([[0, 0], [750, 0], [0, 1000], [750, 1000]]).reshape(-1, 1, 2)
+    def in_view():
+        u = cv2.perspectiveTransform(cv2.perspectiveTransform(corners, cam), np.float64(s.cam["h"][0])).reshape(-1, 2)
+        return s._plane("plane").to_output(s.layout.fwd(0, u - s.cam["origin"][0]))
+    res = s.square(in_view().tolist())
+    assert res["how"] == "camera", res
+    P = in_view()
+    top, bot = np.hypot(*(P[1] - P[0])), np.hypot(*(P[3] - P[2]))
+    left, right = np.hypot(*(P[2] - P[0])), np.hypot(*(P[3] - P[1]))
+    assert abs(top / bot - 1) < 0.01 and abs(left / right - 1) < 0.01, "still a trapezium"
+    assert abs(top / left / 0.75 - 1) < 0.01, f"came out {top / left:.3f} wide, not 0.750"
+
+
 def test_align_joins_groups_that_no_single_pair_ties():
     """Two columns whose shared strip is too narrow for any one pair (4.6 % of a scan): matched as wholes, the way
     stitching pairs first and then the pairs helps by hand."""

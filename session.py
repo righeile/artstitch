@@ -210,7 +210,7 @@ class Session:
         w, h = self.store.get(self.photos[r]).shape[1], self.store.get(self.photos[r]).shape[0]
         ratio = None if not size else float(size[0]) / float(size[1])
         W, H, how = flatten.rectangle(p, ((w - 1) / 2.0, (h - 1) / 2.0),
-                                      flatten.focal_px(self.photos[r], w), ratio)
+                                      flatten.focal_px(self.photos[r]), ratio)
         R = cv2.getPerspectiveTransform(np.float32(u), np.float32([[0, 0], [W, 0], [0, H], [W, H]]))
         Hs = [R @ np.asarray(H0, float) for H0 in self.cam["h"]]
         new, rep = flatten.flatten(self.store, self.photos, self.cam["dir"], _sliced(progress, 0, 0.3), Hs=Hs,

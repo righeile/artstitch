@@ -212,7 +212,7 @@ def _inscribed(poly: np.ndarray, cells: int = 512) -> tuple[int, int, int, int]:
             int(np.floor(lo[0] + (x1 - 1) * q)), int(np.floor(lo[1] + (y1 - 1) * q)))
 
 
-def focal_px(path, width: int) -> float | None:
+def focal_px(path) -> float | None:
     """The focal length of a photograph in its own pixels, from what the camera wrote in the file.
 
     A rectangle shot with the camera level and tilted only up or down -- a tripod squared to the wall,
@@ -222,10 +222,9 @@ def focal_px(path, width: int) -> float | None:
     """
     try:
         with Image.open(path) as im:
-            ex = im.getexif()
-        eq35 = ex.get(41989)                                     # FocalLengthIn35mmFilm, whole millimetres
-        if eq35:
-            return float(eq35) / 36.0 * width                    # 36 mm is the long side of the 35 mm frame
+            eq35 = im.getexif().get_ifd(0x8769).get(41989)       # FocalLengthIn35mmFilm, whole millimetres, in the Exif block
+            if eq35:                                             # reckoned on the 35 mm frame's diagonal, as cameras do
+                return float(eq35) / 43.27 * math.hypot(*im.size)
     except Exception:                                            # a file with no camera behind it, or none that said
         pass
     return None

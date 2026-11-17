@@ -274,8 +274,8 @@ def flatten_photos():
     for p in paths:
         if not os.path.isfile(p):
             raise Problem(f"not a file: {p}")
-    if len(paths) < 2:
-        raise Problem("flattening is for a set of photos; one photo is already its own plane")
+    if not paths:
+        raise Problem("no photos given")
     out = Path(paths[0]).parent / "flattened"
 
     def fn(progress, cancel):

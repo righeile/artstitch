@@ -19,7 +19,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import tifffile
-from PIL import Image
+from PIL import Image, ImageOps
 
 import color
 
@@ -61,7 +61,8 @@ def probe(path: str | Path) -> dict:
                 pass
     else:
         with Image.open(p) as im:
-            info.update(w=im.width, h=im.height, channels=len(im.getbands()),
+            up = im.getexif().get(274, 1) in (5, 6, 7, 8)          # a phone held upright stores the picture lying down
+            info.update(w=im.height if up else im.width, h=im.width if up else im.height, channels=len(im.getbands()),
                         dtype="uint16" if _png16(p) else "uint8", compression=str(im.format), alpha="A" in im.getbands(),
                         icc=bool(im.info.get("icc_profile")))
             if im.info.get("dpi"):
@@ -128,6 +129,7 @@ def decode(path: str | Path) -> Tile:
         a = a if a.ndim == 2 else a[..., [2, 1, 0, 3][:a.shape[2]]]        # BGR(A)
     else:
         with Image.open(p) as im:
+            im = ImageOps.exif_transpose(im)                       # and says in the file which way up it was
             a = np.asarray(im.convert("RGBA" if "A" in im.getbands() else "RGB"))
     if a.ndim == 2:
         a = np.repeat(a[..., None], 3, axis=2)

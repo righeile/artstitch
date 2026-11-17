@@ -66,7 +66,9 @@ the histology parts taken out.
    no bend at all, so a lens with none to speak of is left alone. Nothing is
    resampled twice: the squaring below warps the originals again rather than the
    flattened copies. The box also lets PNG and JPEG in, and turns off the trim
-   that a flatbed needs and a camera does not.
+   that a flatbed needs and a camera does not. One photograph on its own is
+   taken too, to be squared and cropped and nothing else, and a phone's
+   photograph opens the way up the phone was held.
 2. **Stitch**: every pair is searched for its overlap, rotation included
    (±3° by default; the box is on the page). Photographs are not turned at all:
    flattening has already put them in one plane, cut upright, and a turn found
@@ -103,7 +105,8 @@ the histology parts taken out.
    a rectangle in, so the picture comes out square however the camera was held.
    Typing the artwork's measured size settles the proportions outright and gives
    the set a resolution, which a photograph does not otherwise carry; without it
-   the proportions are read from the corners, and the toast says which answered.
+   the proportions come from the lens's focal length when the file records it
+   (phones do), else from the corners alone, and the toast says which answered.
 4. **Patch**: dust, specks and hairs. Click on a speck, drag along a hair; the
    brush is in pixels of the full-size picture (`[` `]` change it). Each stroke is
    filled with a copy of the picture from close by, where the ring around the
@@ -254,8 +257,12 @@ reported in the terminal and left out.
 - The shape a marked rectangle is given: measured on eight real photographs of a
   chessboard whose true proportions are known, within 3 % and usually within 1 %
   when the file carries the lens's focal length, and typically 3 % but once 25 %
-  when it must be read from the corners alone. Type the artwork's size if you
-  have measured it -- then it is exact.
+  when it must be read from the corners alone. On 39 hand-held photographs of
+  paintings in two museums, held against the museums' own reproductions: 0.3 %
+  (median) and 2 % at worst from the focal length, 0.5 % but up to 10 % from
+  the corners. Six of them squared one at a time came out 0.03-0.6 % off and
+  within a few pixels of a square-on view. Type the artwork's size if you have
+  measured it -- then it is exact.
 
 ## Checks
 
