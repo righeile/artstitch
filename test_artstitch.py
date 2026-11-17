@@ -29,8 +29,9 @@ import color
 import edges
 import export
 import tiles
+import compose
 from align import (STIFF, SURE, _bending, _unaffine, _best_per_pair, _good, align_set, coarse_pair, connected,
-                   hand_layout, overlapping_pairs)
+                   hand_layout, overlapping_pairs, solve_rigid)
 from geometry import Frame, Layout, rot
 from ncc import fast_shape, masked_ncc_map, pack_fft, peak
 from session import Session
@@ -1238,6 +1239,63 @@ def test_addons_reach_the_page_and_a_broken_one_is_left_out():
     assert 'id="addon-scans"' in page and "/addons/" not in page          # no add-on: the slot stays empty
 
 
+def test_the_low_band_is_blended_across_a_cut_and_the_detail_is_not():
+    """Two tiles over one gradient, the second 6 % brighter.  The cut stays hard -- no detail is mixed --
+    but the slow half of the brightness is shared out, so the step the cut would show is gone.  Tiles that
+    already agree get nothing at all, which is why a flatbed scan does not notice this exists."""
+    hw = (200, 300)
+    base = np.repeat(np.linspace(40, 200, hw[1])[None, :], hw[0], 0).astype(np.float32)
+    imgs = [np.repeat(base[..., None], 3, 2), np.repeat(base[..., None], 3, 2) * 1.06]
+    v0, v1 = np.zeros(hw, bool), np.zeros(hw, bool)
+    v0[:, :200], v1[:, 100:] = True, True
+    D = compose.fit_field(imgs, [v0, v1], 16, hw)                 # node (i, j) is low-res pixel (64i, 64j)
+    a, b = imgs[0][64, 128] / 255, imgs[1][64, 128] / 255         # a node in the middle of the overlap
+    step = float(np.abs(a - b).max())
+    left = float(np.abs((a + D[0][1, 2]) - (b + D[1][1, 2])).max())
+    assert step > 0.01 and left < 0.25 * step, (step, left)
+    same = compose.fit_field([imgs[0], imgs[0]], [v0, v1], 16, hw)
+    assert np.abs(same).max() < 1e-3, np.abs(same).max()
+
+
+def test_a_falloff_shared_by_every_frame_is_found_and_taken_back_out():
+    """What a photograph and a microscope field do and a flatbed does not: darken towards the corners, the
+    same way every frame.  Three frames, the third wide enough that its middle lies over the others' edges,
+    which is the only reason the overlaps can say anything about radius at all."""
+    sizes = [(1000, 1000), (1000, 1000), (2000, 1000)]
+    lay = Layout(sizes)
+    hw, stp = (100, 200), 10                                       # grid pixel (i, j) is mosaic (10j, 10i)
+    yy, xx = np.mgrid[0:hw[0], 0:hw[1]].astype(np.float32) * stp
+    maps = [(xx, yy), (xx - 900, yy), (xx, yy)]
+    valid = [(xx >= 0) & (xx < 1000), (xx >= 900) & (xx < 1900), (xx >= 0) & (xx < 2000)]
+    rng = np.random.default_rng(4)
+    paint = (60 + 120 * rng.random((hw[0], hw[1], 1))).astype(np.float32).repeat(3, 2)
+    imgs = [paint * (1 - 0.3 * compose.tile_radius(lay, k, *maps[k])[..., None] ** 2) for k in range(3)]
+
+    coef = compose.fit_vignette(lay, maps, imgs, valid, 0)
+    assert coef is not None and (coef <= 0).all(), coef            # light falls off, it does not rise
+    lift = float(np.exp(-coef.sum(1)).max()) - 1                   # the corner, put back
+    assert 0.08 < lift < 0.60, lift                                # truth is 0.43; the ridge keeps it short
+    assert compose.fit_vignette(lay, maps[:2], imgs[:2], valid[:2], 0) is None   # two frames can never say
+
+    flat = [paint.copy() for _ in range(3)]
+    assert compose.fit_vignette(lay, maps, flat, valid, 0) is None  # and nothing is found where none is
+
+
+def test_solve_rigid_can_fit_a_scan_that_came_out_a_shade_bigger():
+    """A carriage does not run at the speed it claims, so two passes of one sheet are not the same size to
+    a part in a thousand.  With the mesh on nothing notices; with Reposition there is nothing else to take
+    it up, so the rigid fit may have the scale too."""
+    lay = Layout([(2000, 1500), (2000, 1500)])
+    th, o, sc = 0.01, np.array([1800.0, 30.0]), 1.004
+    rng = np.random.default_rng(1)
+    U0 = rng.uniform([0, 0], [1999, 1499], (400, 2))
+    U1 = (lay.rigid(0, U0) - o) @ rot(th) / sc + lay.centre(1)
+    lay.theta[1], lay.o[1] = 0.0, o + 20                           # a rough start, as the tree would give
+    solve_rigid(lay, [(0, 1, U0, U1, 1.0)], scale=True)
+    assert abs(lay.s[1] - sc) < 3e-4 and abs(lay.theta[1] - th) < 1e-4, (lay.s[1], lay.theta[1])
+    assert lay.s[0] == 1.0                                          # the anchor is the ruler
+
+
 def test_reposition_only_turns_and_shifts_and_the_session_remembers_it():
     """Photoshop's Reposition.  No scan is bent, so each keeps the bow it had on the glass and the seams
     carry it: a twentieth of a pixel becomes ten.  That is the mode, not a better stitch -- the graph cut
@@ -1272,6 +1330,7 @@ def test_the_page_can_hand_over_tilts_and_a_trim():
     assert c.post("/api/session/settings", json={"trim_mm": 99}).get_json()["trim_mm"] == 25.0
     assert c.post("/api/session/settings", json={"trim_mm": 3}).get_json()["trim_mm"] == 3.0
     assert c.post("/api/session/settings", json={"warp": False}).get_json()["warp"] is False
+    assert c.post("/api/session/settings", json={"even": False}).get_json()["even"] is False
     assert abs(np.max(app.STATE["session"].trim_px()) - 3 * 1200 / 25.4) < 1e-6   # no dpi in the file
 
 

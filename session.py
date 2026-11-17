@@ -80,6 +80,7 @@ class Session:
         self.max_deg = 3.0
         self.trim_mm = 0.0                              # the bend where the sheet runs off the glass, cut before matching
         self.warp = True                                # off: scans are only turned and shifted, never bent (Reposition)
+        self.even = True                                # off: no shared falloff and no low-band blend at the cuts
         self.trimmed: dict[int, list[str]] = {}         # per scan, the sides the last alignment cut (edges.SIDES)
         self.tilts: list[float] | None = None           # degrees the paper lay at on the glass, if the scanner said
         self.dpi: float | None = None                   # None: from the scans, else 1200
@@ -128,7 +129,7 @@ class Session:
         lay, report = align_set(self.store, self.paths, _sliced(progress, 0, 0.8 if seams else 1),
                                 poses=poses, max_deg=self.max_deg,
                                 tilts=None if poses is not None else self.tilts, trim=self.trim_px(),
-                                mesh=self.warp)
+                                mesh=self.warp, scale=not self.warp)
         self.layout, self.report, self.plan, self.geom, self._sides = lay, clean(report), None, None, None
         self.trimmed = {k: [s for s, v in zip(edges.SIDES, lay.trim[k]) if v > 0] for k in range(len(self.paths))}
         self.patches, self._undo, self._retouch = [], [], patch.Retouch()   # they were put on pixels that may have moved
@@ -139,7 +140,7 @@ class Session:
     def seams(self, progress=_quiet) -> None:
         if self.layout is None:
             raise RuntimeError("align first")
-        self.plan = plan_seams(self.layout, self.store, self.paths, progress)
+        self.plan = plan_seams(self.layout, self.store, self.paths, progress, even=self.even)
         self._touch()
 
     def mosaic(self) -> Mosaic:
@@ -357,6 +358,10 @@ class Session:
             add("warn", "Reposition: the scans are only turned and shifted, so each keeps the bow it had on the "
                         "glass. The seams below say by how much; a cut through flat paint hides it, a cut across "
                         "a hard edge in the picture does not.")
+        if self.plan is not None and self.plan.vig is not None:
+            lift = 100 * (float(np.exp(-self.plan.vig.sum(1)).max()) - 1)
+            add("ok", f"the scans darken towards their corners by about {lift:.0f} %, the same way in each, and that "
+                      f"has been taken back out. A flatbed does not do this; a camera and a microscope do.")
         res = r.get("residual") or {}
         for pair, v in res.items():
             if v["rms"] > RESIDUAL_BAD:
@@ -396,7 +401,7 @@ class Session:
                                                 int(math.ceil(ext[1][1] - math.floor(ext[0][1]))) + 1],
             "report": {k: v for k, v in self.report.items() if k != "edges"},
             "geom": self.geom, "result_size": self.result_size(), "adj": self.adj, "max_deg": self.max_deg,
-            "trim_mm": self.trim_mm, "warp": self.warp, "tilts": self.tilts,
+            "trim_mm": self.trim_mm, "warp": self.warp, "even": self.even, "tilts": self.tilts,
             "dpi": self.dpi, "exports": self.exports, "ver": self.ver, "key": self.key, "open": True,
             "patched": len(self.patches), "undo": len(self._undo),
             "qc": self.qc() if lay is not None else [],
@@ -523,7 +528,7 @@ class Session:
 
     def to_dict(self) -> dict:
         return clean({"format": FORMAT, "name": self.name, "paths": self.paths, "max_deg": self.max_deg, "dpi": self.dpi,
-                      "trim_mm": self.trim_mm, "warp": self.warp, "tilts": self.tilts,
+                      "trim_mm": self.trim_mm, "warp": self.warp, "even": self.even, "tilts": self.tilts,
                       "layout": None if self.layout is None else self.layout.to_dict(), "report": self.report,
                       "plan": None if self.plan is None else self.plan.to_dict(), "geom": self.geom, "adj": self.adj,
                       "patches": self.patches, "exports": self.exports})
@@ -550,6 +555,7 @@ class Session:
         s.max_deg, s.dpi, s.report = d.get("max_deg", 3.0), d.get("dpi"), d.get("report") or {}
         s.trim_mm, s.tilts = float(d.get("trim_mm") or 0.0), d.get("tilts")
         s.warp = bool(d.get("warp", True))              # sets saved before Reposition existed were all warped
+        s.even = bool(d.get("even", True))              # and their plan carries no field, so they look unchanged
         s.layout = None if d.get("layout") is None else Layout.from_dict(d["layout"])
         s.plan = None if d.get("plan") is None else Plan.from_dict(d["plan"])
         s.geom, s.adj, s.exports = d.get("geom"), d.get("adj") or {}, d.get("exports") or []

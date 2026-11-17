@@ -305,6 +305,8 @@ def session_settings():
         s.trim_mm = max(0.0, min(float(b["trim_mm"] or 0.0), 25.0))
     if "warp" in b:
         s.warp = bool(b["warp"])
+    if "even" in b:
+        s.even = bool(b["even"])
     return jsonify(s.summary())
 
 

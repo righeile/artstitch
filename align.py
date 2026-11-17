@@ -226,8 +226,10 @@ def _edge_samples(lay: Layout, e: dict, nx: int = 7, ny: int = 9):
     return Ui[ok], Uj[ok]
 
 
-def solve_rigid(lay: Layout, corrs: list[tuple], edges_for_init: list[dict] | None = None) -> None:
-    """Fit theta, o of every tile but the anchor to correspondences (i, j, U_i, U_j, w).
+def solve_rigid(lay: Layout, corrs: list[tuple], edges_for_init: list[dict] | None = None,
+                scale: bool = False) -> None:
+    """Fit theta, o -- and with ``scale``, the size -- of every tile but the anchor to
+    correspondences (i, j, U_i, U_j, w).
 
     Robust (soft-L1); initial values come from the max spanning tree of
     ``edges_for_init`` when given, otherwise from ``lay`` as it is.  Scans nothing ties to the anchor make
@@ -267,28 +269,31 @@ def solve_rigid(lay: Layout, corrs: list[tuple], edges_for_init: list[dict] | No
     free = [k for k in range(n) if k not in fixed]
     if not free or not corrs:
         return
-    col = {k: 3 * m for m, k in enumerate(free)}
+    m_ = 4 if scale else 3
+    col = {k: m_ * p for p, k in enumerate(free)}
 
     def unpack(x):
-        th, o = lay.theta.copy(), lay.o.copy()
+        th, o, sc = lay.theta.copy(), lay.o.copy(), lay.s.copy()
         for k in free:
             th[k], o[k] = x[col[k]], x[col[k] + 1:col[k] + 3]
-        return th, o
+            if scale:
+                sc[k] = math.exp(x[col[k] + 3])          # log, so a size cannot be fitted negative
+        return th, o, sc
 
     def resid(x):
-        th, o = unpack(x)
+        th, o, sc = unpack(x)
         out = []
         for i, j, Ui, Uj, w in corrs:
-            Xi = (Ui - lay.centre(i)) @ rot(th[i]).T + o[i]
-            Xj = (Uj - lay.centre(j)) @ rot(th[j]).T + o[j]
+            Xi = (Ui - lay.centre(i)) * sc[i] @ rot(th[i]).T + o[i]
+            Xj = (Uj - lay.centre(j)) * sc[j] @ rot(th[j]).T + o[j]
             out.append(((Xi - Xj) * math.sqrt(w)).ravel())
         return np.concatenate(out)
 
-    x0 = np.concatenate([[lay.theta[k], *lay.o[k]] for k in free])
-    scale = np.tile([1e-2, 30.0, 30.0], len(free))
-    sol = least_squares(resid, x0, loss="soft_l1", f_scale=4.0, x_scale=scale)
-    th, o = unpack(sol.x)
-    lay.theta[:], lay.o[:] = th, o
+    x0 = np.concatenate([[lay.theta[k], *lay.o[k]] + ([math.log(lay.s[k])] if scale else []) for k in free])
+    xs = np.tile([1e-2, 30.0, 30.0] + ([1e-3] if scale else []), len(free))
+    sol = least_squares(resid, x0, loss="soft_l1", f_scale=4.0, x_scale=xs)
+    th, o, sc = unpack(sol.x)
+    lay.theta[:], lay.o[:], lay.s[:] = th, o, sc
 
 
 def _apart(lay: Layout, groups: list[list[int]], gap: float = 600.0) -> None:
@@ -581,7 +586,7 @@ def overlapping_pairs(lay: Layout, min_frac: float = 0.04) -> list[tuple[int, in
 
 
 def refine(lay: Layout, store, paths, levels=LEVELS, progress: Progress = _quiet, workers: int = 6,
-           mesh: bool = True) -> dict:
+           mesh: bool = True, scale: bool = False) -> dict:
     """Coarse to fine dense matching + mesh solves.  Returns the final pair residuals.
 
     A pair that first overlaps enough to be matched at a fine level (a narrow strip) can still be far off when the
@@ -615,7 +620,7 @@ def refine(lay: Layout, store, paths, levels=LEVELS, progress: Progress = _quiet
                     Ua = lay.inv(a, X)
                     Ub = lay.inv(b, X + delta)
                     corrs.append((a, b, Ua, Ub, float(np.mean(ncc ** 2)) / 25.0))
-                solve_rigid(lay, corrs)
+                solve_rigid(lay, corrs, scale=scale)
                 for k in range(len(lay.sizes)):
                     lay.reset_mesh(k)
                 continue
@@ -664,7 +669,7 @@ def trim_sides(lay: Layout, px: np.ndarray) -> None:
 
 
 def align_set(store, paths, progress: Progress = _quiet, poses=None, max_deg: float = 3.0,
-              tilts=None, trim=None, mesh: bool = True) -> tuple[Layout, dict]:
+              tilts=None, trim=None, mesh: bool = True, scale: bool = False) -> tuple[Layout, dict]:
     """Paths of one artwork's scans -> (Layout, report).
 
     ``poses`` are rough hand placements: they say where to look (``coarse_edges``) and are what
@@ -727,7 +732,7 @@ def align_set(store, paths, progress: Progress = _quiet, poses=None, max_deg: fl
     report["disconnected"] = groups if len(groups) > 1 else []
     if trim is not None:
         trim_sides(lay, np.asarray(trim, float).reshape(n))
-    report["residual"] = {f"{a + 1}-{b + 1}": v for (a, b), v in refine(lay, store, paths, progress=progress, mesh=mesh).items()}
+    report["residual"] = {f"{a + 1}-{b + 1}": v for (a, b), v in refine(lay, store, paths, progress=progress, mesh=mesh, scale=scale).items()}
     a = lay.anchor
     turn = {k: round(_turn(lay, a, k) / (math.pi / 2)) % 4 for k in next(g for g in groups if a in g)}
     report["turned"] = {str(k + 1): 90 * t for k, t in turn.items() if t} if hint is None else {}

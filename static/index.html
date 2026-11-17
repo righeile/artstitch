@@ -67,7 +67,7 @@
     <h2 class="page-title">Stitch</h2>
     <p class="page-hint">Every pair of scans is searched for where they overlap, rotation included; the
       scans are then matched to each other as closely as a flatbed allows and cut apart along the
-      path where they already agree, so nothing is blended and nothing is softened.</p>
+      path where they already agree, so no detail is blended and nothing is softened.</p>
 
     <div class="panel">
       <div class="row wrap">
@@ -80,6 +80,8 @@
           <input type="number" id="dpiIn" class="mini" style="width:78px" min="1" step="1" placeholder="from file"> dpi</label>
         <label class="row" title="Place the scans without bending them, the way Photoshop&apos;s Reposition does. A sheet does not lie flat on the glass, so each scan keeps its own bow and the seams close to several pixels instead of a fraction of one: the cut hides that in paint and shows it where a hard edge in the picture crosses a seam. Leave it off unless you have a reason not to warp.">
           <input type="checkbox" id="noWarp"> Reposition only, do not bend the scans</label>
+        <label class="row" title="Fit one lens-style falloff shared by every scan, and blend the slow half of the brightness across each cut while the detail still comes from one scan only. A flatbed lamp is even and a sheet lies flat, so on scans both find nothing and change nothing; a photograph or a microscope field darkens towards its corners, and that is what this takes out. Turn it off to have each scan exactly as it came, with one brightness apiece.">
+          <input type="checkbox" id="evenLight" checked> Even out the lighting across the scans</label>
         <span class="spacer"></span>
         <button class="ghost" id="btnArrange">Place scans by hand&hellip;</button>
         <button class="primary" id="btnStitch">Stitch</button>

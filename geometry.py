@@ -62,7 +62,7 @@ class Frame:
 class Layout:
     """Poses and meshes of ``n`` tiles.  ``sizes`` are (w, h) in source pixels."""
 
-    def __init__(self, sizes, theta=None, o=None, g: float = 512.0, anchor: int = 0, trim=None):
+    def __init__(self, sizes, theta=None, o=None, g: float = 512.0, anchor: int = 0, trim=None, s=None):
         self.sizes = [(int(w), int(h)) for w, h in sizes]
         n = len(self.sizes)
         #: Source pixels cut off each scan, per side (left, right, top, bottom, as ``edges.SIDES``), before
@@ -71,6 +71,10 @@ class Layout:
         tr = np.zeros((n, 4)) if trim is None else np.asarray(trim, float)
         self.trim = (np.repeat(tr.reshape(n, 1), 4, 1) if tr.ndim < 2 else tr.reshape(n, 4)).copy()
         self.theta = np.zeros(n) if theta is None else np.asarray(theta, float).copy()
+        #: Scale of each scan.  Two passes of the same sheet are not the same size to a part in a
+        #: thousand -- the carriage does not run at exactly the speed it claims -- and with the mesh
+        #: off there is nothing else to take that up.  1.0 unless ``solve_rigid`` was asked to fit it.
+        self.s = np.ones(n) if s is None else np.asarray(s, float).reshape(n).copy()
         self.o = (np.array([self.centre(k) for k in range(n)]) if o is None
                   else np.asarray(o, float).reshape(n, 2).copy())
         self.g = float(g)
@@ -101,10 +105,10 @@ class Layout:
     # -- maps -----------------------------------------------------------------
 
     def rigid(self, k: int, u: np.ndarray) -> np.ndarray:
-        return (np.asarray(u, float) - self.centre(k)) @ rot(self.theta[k]).T + self.o[k]
+        return (np.asarray(u, float) - self.centre(k)) * self.s[k] @ rot(self.theta[k]).T + self.o[k]
 
     def rigid_inv(self, k: int, P: np.ndarray) -> np.ndarray:
-        return (np.asarray(P, float) - self.o[k]) @ rot(self.theta[k]) + self.centre(k)
+        return (np.asarray(P, float) - self.o[k]) @ rot(self.theta[k]) / self.s[k] + self.centre(k)
 
     def weights(self, k: int, P: np.ndarray):
         """Bilinear node indices and weights of mosaic points P in tile k's mesh."""
@@ -180,14 +184,14 @@ class Layout:
     # -- persistence -----------------------------------------------------------
 
     def to_dict(self) -> dict:
-        return {"sizes": self.sizes, "theta": self.theta.tolist(), "o": self.o.tolist(),
+        return {"sizes": self.sizes, "theta": self.theta.tolist(), "o": self.o.tolist(), "s": self.s.tolist(),
                 "g": self.g, "anchor": self.anchor, "trim": self.trim.tolist(),
                 "org": [o.tolist() for o in self.org],
                 "D": [{"shape": list(d.shape), "data": np.round(d, 3).ravel().tolist()} for d in self.D]}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Layout":
-        lay = cls(d["sizes"], d["theta"], d["o"], d["g"], d["anchor"], d.get("trim"))
+        lay = cls(d["sizes"], d["theta"], d["o"], d["g"], d["anchor"], d.get("trim"), d.get("s"))
         lay.org = [np.array(o, float) for o in d["org"]]
         lay.D = [np.array(m["data"], float).reshape(m["shape"]) for m in d["D"]]
         return lay

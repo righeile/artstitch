@@ -10,9 +10,15 @@ a label map (which tile owns which pixel) at 1/4 scale.
 Rendering.  Every output pixel is one interpolation of one or two source
 pixels: ``Layout.tile_maps`` composes pose, mesh and output frame into a single
 source coordinate per output pixel, and the label map -- bilinearly upsampled and
-sharpened to a ~3 px ramp -- says how much each tile contributes.  No pyramid
-blend: a wide blend is what softens detail, and the seams sit where the tiles
-already agree.
+sharpened to a ~3 px ramp -- says how much each tile contributes.  Detail is
+never blended: a wide blend is what softens it, and the cut goes where the
+tiles already agree.
+
+What is blended is the low frequencies, through ``fit_field``: a smooth
+multiplicative correction per tile, fitted so that the tiles' blurred versions
+agree.  That is the whole of a lamp that falls off across the bed, a
+photograph's vignette, a slide's drift from field to field -- and the slow half
+of what Reposition leaves at a seam.  On flat paper on a flatbed it fits 1.0.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ from typing import Callable
 import cv2
 import numpy as np
 from scipy import ndimage as ndi
+from scipy.optimize import lsq_linear
 
 from align import MARGIN_PX
 from geometry import Frame, Layout
@@ -35,6 +42,11 @@ _quiet: Progress = lambda p, m: None
 
 SEAM_MIN_F = 4                               # finest scale of the label map
 SEAM_TARGET_PX = 1.2e6                       # size of the first, full graph cut
+SEAM_FIELD_F = 16                            # scale the correction is fitted at
+FIELD_PX = 1024                              # mosaic px between correction nodes: how sharply it may bend
+VIG_MAX = 0.47                               # most a corner may be lifted: exp(0.47) = 1.6x
+VIG_RIDGE = 0.2                              # how much overlap it takes before a falloff is believed
+NODE_PX = max(round(FIELD_PX / SEAM_FIELD_F), 1) * SEAM_FIELD_F         # the spacing actually used, a whole 1/f px
 
 
 @dataclass
@@ -45,16 +57,27 @@ class Plan:
     ext0: np.ndarray                         # mosaic coordinate of label pixel (0, 0)
     labels: np.ndarray                       # uint8, tile index or 255 = no data
     gains: np.ndarray                        # (n, 3) per-tile per-channel multipliers
+    field: np.ndarray | None = None          # (n, gy, gx, 3) low-band correction to ADD, a node every NODE_PX
+    vig: np.ndarray | None = None            # (3, 2) one falloff c1 r^2 + c2 r^4 shared by every scan
 
     def to_dict(self) -> dict:
         ok, png = cv2.imencode(".png", self.labels)
-        return {"f": self.f, "ext0": self.ext0.tolist(), "gains": self.gains.tolist(),
-                "shape": list(self.labels.shape), "labels_png": png.tobytes().hex()}
+        d = {"f": self.f, "ext0": self.ext0.tolist(), "gains": self.gains.tolist(),
+             "shape": list(self.labels.shape), "labels_png": png.tobytes().hex()}
+        if self.field is not None:
+            d["field"] = self.field.tolist()              # already rounded by ``fit_field``
+        if self.vig is not None:
+            d["vig"] = self.vig.tolist()
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Plan":
         lab = cv2.imdecode(np.frombuffer(bytes.fromhex(d["labels_png"]), np.uint8), cv2.IMREAD_UNCHANGED)
-        return cls(int(d["f"]), np.array(d["ext0"], float), lab, np.array(d["gains"], float))
+        fld = d.get("field")                 # sets planned before the field existed were gain-only
+        vg = d.get("vig")
+        return cls(int(d["f"]), np.array(d["ext0"], float), lab, np.array(d["gains"], float),
+                   None if fld is None else np.array(fld, float),
+                   None if vg is None else np.array(vg, float))
 
 
 def _to255(a: np.ndarray) -> np.ndarray:
@@ -111,6 +134,140 @@ def fit_gains(lay: Layout, imgs, valids) -> np.ndarray:
     return g
 
 
+def tile_radius(lay: Layout, k: int, ux: np.ndarray, uy: np.ndarray) -> np.ndarray:
+    """Distance of each source pixel from the middle of its own scan, 1.0 at the corner."""
+    cx, cy = lay.centre(k)
+    w, h = lay.sizes[k]
+    return np.hypot(ux - cx, uy - cy) / (math.hypot(w - 1, h - 1) / 2.0)
+
+
+def vig_factor(coef: np.ndarray, r: np.ndarray) -> np.ndarray:
+    """The multiplier that takes ``coef``'s falloff back out: (h, w, 3) from (h, w)."""
+    r2 = (r * r)[..., None]
+    return np.exp(-(r2 * coef[:, 0] + r2 * r2 * coef[:, 1])).astype(np.float32)
+
+
+def shade(lay: Layout, k: int, im: np.ndarray, gain, vig, frame: Frame, hw) -> np.ndarray:
+    """Tile k's pixels with its gain and the shared falloff taken out -- what the cut and the blend see."""
+    out = im * gain
+    if vig is not None:
+        out = out * vig_factor(vig, tile_radius(lay, k, *lay.tile_maps(k, frame, hw, cs=8)))
+    return out
+
+
+def fit_vignette(lay: Layout, maps, imgs, valids, anchor: int, sample: int = 30000) -> np.ndarray | None:
+    """One falloff ``c1 r^2 + c2 r^4``, in log light, shared by every scan -- or None if there is none.
+
+    A flatbed lamp is even and a sheet lies on the glass, so for a scan this fits zero and is dropped.
+    A photograph and a microscope field both darken towards the corner, every frame the same way, and
+    that is what makes it findable at all: where two frames overlap, one of them is near its middle and
+    the other near its edge, so the overlap says how much darker the edge is.  A single curve shared by
+    all of them is also the only version that is well determined -- a free field per frame would mostly
+    fit the picture.
+
+    Two frames are not enough.  Split one picture down the middle and the two halves meet mirror-image,
+    each at the same radius as the other, so the overlap says nothing about radius at all and the fit
+    takes whatever brightness difference it finds and blames it on an enormous falloff (measured: 400 %
+    at the corner).  From three it has somewhere to stand.  The cap is the second guard: a real lens or
+    lamp does not lose more than about a third of its light at the corner.
+
+    ``maps[k]`` are tile k's source coordinates on the same low-resolution grid as ``imgs[k]``.
+    """
+    n = len(imgs)
+    if n < 3:
+        return None
+    rows, rhs = [], []
+    rng = np.random.default_rng(0)
+    for a in range(n):
+        for b in range(a + 1, n):
+            m = valids[a] & valids[b]
+            A_, B_ = imgs[a], imgs[b]
+            m &= (A_.min(2) > 10) & (A_.max(2) < 245) & (B_.min(2) > 10) & (B_.max(2) < 245)
+            idx = np.flatnonzero(m.ravel())
+            if len(idx) < 500:
+                continue
+            if len(idx) > sample:
+                idx = rng.choice(idx, sample, replace=False)
+            ra = tile_radius(lay, a, maps[a][0].ravel()[idx], maps[a][1].ravel()[idx])
+            rb = tile_radius(lay, b, maps[b][0].ravel()[idx], maps[b][1].ravel()[idx])
+            row = np.zeros((len(idx), 2 + n))
+            row[:, 0], row[:, 1] = ra ** 2 - rb ** 2, ra ** 4 - rb ** 4
+            row[:, 2 + a], row[:, 2 + b] = 1.0, -1.0
+            rows.append(row)
+            rhs.append(np.log(A_.reshape(-1, 3)[idx]) - np.log(B_.reshape(-1, 3)[idx]))
+    if not rows:
+        return None
+    M, R = np.vstack(rows), np.vstack(rhs)
+    keep = [0, 1] + [2 + k for k in range(n) if k != anchor]          # the anchor's gain is the gauge
+    M = M[:, keep]
+    reg = np.zeros((2, M.shape[1]))             # a firm pull to no falloff at all: see VIG_RIDGE
+    reg[0, 0] = reg[1, 1] = math.sqrt(len(M)) * VIG_RIDGE
+    M = np.vstack([M, reg])
+    R = np.vstack([R, np.zeros((2, 3))])
+    lo = np.full(M.shape[1], -np.inf)
+    hi = np.full(M.shape[1], np.inf)
+    lo[:2], hi[:2] = -1.5, 0.0        # light falls off towards a corner, it does not rise: the free fit bends
+    coef = np.array([lsq_linear(M, R[:, c], bounds=(lo, hi)).x[:2] for c in range(3)])    # (3, 2)
+    if np.abs(coef.sum(1)).max() < 0.02:        # corner within 2 % of the middle: noise, and correcting it costs
+        return None
+    over = np.abs(coef.sum(1)).max() / VIG_MAX
+    return coef / over if over > 1 else coef    # capped as a whole, so the channels keep their proportions
+
+
+def fit_field(imgs, valids, f: int, hw) -> np.ndarray:
+    """The low half of a two-band blend: what to ADD to each tile so the tiles' blurred versions agree.
+
+    Blend detail across a seam and you soften it, which is why the cut is hard.  But a hard cut shows
+    every slow difference between the two tiles as a step, and with Reposition there is one: the paper's
+    bow is a few pixels, and a few pixels of shift in a gradient is a brightness difference.
+
+    So the two bands are drawn differently.  Detail comes from whichever tile owns the pixel, as before;
+    the slow part is shared out until the tiles agree.  Each PAIR is blurred over its own overlap and
+    only there -- blur a tile over its own edge instead and the one-sided average of a gradient comes
+    out biased, which on a real set was worth twice the difference it was meant to measure.  Then the
+    pairs are settled against each other (damped Jacobi: a plain one swaps the two tiles round forever).
+
+    The result is smooth, so it survives being kept at one value every ``NODE_PX``, and it is zero
+    wherever the tiles already agree -- which is why flat paper on a flatbed does not notice it.
+    ``imgs`` are 0..255 and the result is in 0..1, the units the renderer works in.
+    """
+    n = len(imgs)
+    sig = max(FIELD_PX / f / 2.0, 1.0)
+    step = max(int(round(FIELD_PX / f)), 1)                  # = NODE_PX mosaic px
+    gy, gx = int(math.ceil(hw[0] / step)) + 1, int(math.ceil(hw[1] / step)) + 1
+    iy = np.minimum(np.arange(gy) * step, hw[0] - 1)         # node (i, j) IS low-res pixel (i*step, j*step),
+    ix = np.minimum(np.arange(gx) * step, hw[1] - 1)         # so ``Mosaic`` can find it again at NODE_PX
+    blur = lambda a: cv2.GaussianBlur(a, (0, 0), sig, borderType=cv2.BORDER_REPLICATE)
+    at = lambda a: a[np.ix_(iy, ix)]
+
+    pairs = []
+    for a in range(n):
+        for b in range(a + 1, n):
+            m = (valids[a] & valids[b]).astype(np.float32)
+            if m.sum() < 50:
+                continue
+            sup = blur(m)
+            d = blur((imgs[a] - imgs[b]) * m[..., None]) / (255.0 * np.maximum(sup, 1e-6)[..., None])
+            pairs.append((a, b, at(np.clip(sup, 0.0, 1.0))[..., None], at(np.clip(d, -0.25, 0.25))))
+    if not pairs:
+        return np.zeros((n, gy, gx, 3))
+
+    D = np.zeros((n, gy, gx, 3))
+    den = np.zeros((n, gy, gx, 1))
+    for a, b, w, _ in pairs:
+        den[a] += w
+        den[b] += w
+    ok = den > 1e-6
+    for _ in range(40):
+        num = np.zeros_like(D)
+        for a, b, w, d in pairs:
+            num[a] += w * (D[b] - d)
+            num[b] += w * (D[a] + d)
+        D = 0.5 * D + 0.5 * np.where(ok, num / np.maximum(den, 1e-6), 0.0)
+    D = np.clip(D * np.clip(den / 0.05, 0.0, 1.0), -0.25, 0.25)          # fades out where no pair reaches
+    return np.round(D, 5)                    # the precision it is saved at, so an opened set renders identically
+
+
 def _cut(imgs, corners, masks, cost: str = "COST_COLOR") -> list[np.ndarray]:
     """OpenCV graph-cut seams: returns the masks after the cut (mutually exclusive)."""
     finder = cv2.detail_GraphCutSeamFinder(cost)
@@ -138,7 +295,7 @@ def _adjacent(lab: np.ndarray) -> set[tuple[int, int]]:
 
 
 def _refine(lay: Layout, store, paths, lab: np.ndarray, f: int, ext: np.ndarray, gains: np.ndarray,
-            radius: int = 3) -> np.ndarray:
+            vig=None, radius: int = 3) -> np.ndarray:
     """Re-cut a band around every boundary of the label map, at scale f."""
     frame = Frame(scale=1.0 / f, origin=ext[0])
     H, W = lab.shape
@@ -157,7 +314,7 @@ def _refine(lay: Layout, store, paths, lab: np.ndarray, f: int, ext: np.ndarray,
         imgs, masks = [], []
         for t in (i, j):
             im, v = render_low(lay, store, paths, t, f, fr, hw)
-            imgs.append(im * gains[t])
+            imgs.append(shade(lay, t, im, gains[t], vig, fr, hw))
             masks.append((((sub == t) | bnd) & v).astype(np.uint8) * 255)
         try:
             ri, rj = _cut(imgs, [(0, 0), (0, 0)], masks, "COST_COLOR_GRAD")
@@ -170,8 +327,12 @@ def _refine(lay: Layout, store, paths, lab: np.ndarray, f: int, ext: np.ndarray,
     return lab
 
 
-def plan_seams(lay: Layout, store, paths, progress: Progress = _quiet) -> Plan:
-    """Cut the tiles apart along low-difference paths and match their brightness."""
+def plan_seams(lay: Layout, store, paths, progress: Progress = _quiet, even: bool = True) -> Plan:
+    """Cut the tiles apart along low-difference paths and match their brightness.
+
+    ``even`` is the photometric half: the shared falloff and the low-band blend.  Both are nothing
+    on scans that already agree, so it is on; off leaves every tile exactly as the scanner gave it
+    but for one gain apiece, which is what the app did before either existed."""
     n = len(paths)
     ext = lay.extent()
     if n == 1:
@@ -186,6 +347,10 @@ def plan_seams(lay: Layout, store, paths, progress: Progress = _quiet) -> Plan:
     rendered = [render_low(lay, store, paths, k, f, frame, hw) for k in range(n)]
     imgs = [r[0] for r in rendered]
     valids = [r[1] for r in rendered]
+    maps = [lay.tile_maps(k, frame, hw, cs=8) for k in range(n)]
+    vig = fit_vignette(lay, maps, imgs, valids, lay.anchor) if even else None
+    if vig is not None:
+        imgs = [im * vig_factor(vig, tile_radius(lay, k, *maps[k])) for k, im in enumerate(imgs)]
     gains = fit_gains(lay, imgs, valids)
     imgs = [im * gains[k] for k, im in enumerate(imgs)]
 
@@ -203,8 +368,17 @@ def plan_seams(lay: Layout, store, paths, progress: Progress = _quiet) -> Plan:
         if lab.shape != hw:
             lab = np.pad(lab, ((0, hw[0] - lab.shape[0]), (0, hw[1] - lab.shape[1])), mode="edge")
         progress(0.3 + 0.6 * (1 - math.log2(f / SEAM_MIN_F) / 4), f"refining seams at 1/{f}")
-        lab = _refine(lay, store, paths, lab, f, ext, gains)
-    return Plan(f, ext[0].copy(), lab, gains)
+        lab = _refine(lay, store, paths, lab, f, ext, gains, vig)
+
+    if not even:
+        return Plan(f, ext[0].copy(), lab, gains)
+    progress(0.95, "evening out the lighting")
+    hw0 = level_shape(ext, SEAM_FIELD_F)
+    fr0 = Frame(scale=1.0 / SEAM_FIELD_F, origin=ext[0])
+    R = [render_low(lay, store, paths, k, SEAM_FIELD_F, fr0, hw0) for k in range(n)]
+    low = [shade(lay, k, r[0], gains[k], vig, fr0, hw0) for k, r in enumerate(R)]
+    fld = fit_field(low, [r[1] for r in R], SEAM_FIELD_F, hw0)
+    return Plan(f, ext[0].copy(), lab, gains, fld, vig)
 
 
 class Mosaic:
@@ -226,6 +400,12 @@ class Mosaic:
         m = cv2.warpAffine(self._label_mask(k), M, (w, h), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
                            borderMode=cv2.BORDER_CONSTANT, borderValue=0)      # <=1/8 px position steps: fine for a mask
         return np.clip((m - 0.5) * (p.f / max(self.feather, 0.5)) + 0.5, 0.0, 1.0)
+
+    def correction(self, k: int, frame: Frame, w: int, h: int) -> np.ndarray:
+        """``fit_field``'s smooth low-band correction for tile k over a (h, w) window of ``frame``."""
+        M = np.hstack([frame.A / NODE_PX, ((frame.b - self.plan.ext0) / NODE_PX)[:, None]]).astype(np.float64)
+        return cv2.warpAffine(self.plan.field[k].astype(np.float32), M, (w, h),
+                              flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP, borderMode=cv2.BORDER_REPLICATE)
 
     def footprint(self, k: int, frame: Frame, w: int, h: int, pad: int = 1):
         """(x0, y0, x1, y1): the part of a (h, w) window of ``frame`` that tile k can reach, ``pad`` px wider, or None."""
@@ -278,6 +458,10 @@ class Mosaic:
             valid = self.lay.valid_from_maps(k, ux, uy, margin=0.0)
             wc = wk[ya:yb, xa:xb] * valid
             px = im.astype(np.float32) * (self.plan.gains[k] / top).astype(np.float32)
+            if self.plan.vig is not None:
+                px *= vig_factor(self.plan.vig, tile_radius(self.lay, k, ux, uy))
+            if self.plan.field is not None:
+                px = px + self.correction(k, sub, xb - xa, yb - ya)
             acc[ya:yb, xa:xb] += px * wc[..., None]
             wsum[ya:yb, xa:xb] += wc
             if each:
