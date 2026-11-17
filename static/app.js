@@ -414,8 +414,15 @@
   }
 
   function openPaths(paths, name, more) {
+    const camera = $('scanCamera') && $('scanCamera').checked;
     return guard(async () => {
-      openedSession(await req('/api/open', 'POST', { paths, name, ...(more || {}) }));
+      if (camera && paths.length > 1) {
+        const { job } = await req('/api/flatten', 'POST', { paths });
+        const flat = await runJob(job, 'flattenProgress', 'flattened');
+        paths = flat.paths;
+        toast('Flattened onto photo ' + (flat.reference + 1) + ' — it is that photo\u2019s view the picture keeps.');
+      }
+      openedSession(await req('/api/open', 'POST', { paths, name, camera, ...(more || {}) }));
       showPage('stitch');
     });
   }
@@ -427,14 +434,14 @@
       const folder = scanPick.value.trim();
       if (!folder) return toast('Give a folder first.', 'warn');
       remember('folder', folder);
-      const r = await req('/api/scan', 'POST', { folder, recursive: $('scanRecursive').checked, all_images: $('scanAll').checked });
+      const r = await req('/api/scan', 'POST', { folder, recursive: $('scanRecursive').checked, all_images: $('scanAll').checked || $('scanCamera').checked });
       S.sets = r.sets;
       renderSets();
       if (!r.sets.length) toast('No scans found in that folder.', 'warn');
     });
     $('btnScanFiles').onclick = async () => {
       const paths = await LK.browse({ mode: 'files', path: scanPick.value, title: 'Choose the scans of one artwork',
-        exts: $('scanAll').checked ? S.consts.extensions.image : S.consts.extensions.tiff });
+        exts: $('scanAll').checked || $('scanCamera').checked ? S.consts.extensions.image : S.consts.extensions.tiff });
       if (paths && paths.length) openPaths(paths);
     };
     $('btnLoadSession').onclick = async () => {

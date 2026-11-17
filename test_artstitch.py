@@ -27,6 +27,7 @@ from scipy import ndimage as ndi
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import color
 import edges
+import flatten
 import export
 import tiles
 import compose
@@ -777,6 +778,65 @@ def test_the_trim_comes_off_the_sides_a_neighbour_stands_behind():
     one.trim_mm = 2.0
     one.align(seams=False)
     assert one.trimmed == {0: []}                            # one scan: nothing stands behind any side of it
+
+
+def _photos(seed: int = 7):
+    """Four photographs of a flat painting, each from its own corner of the room.
+
+    A camera sees a flat thing through a homography, so each photograph is one: an upright window on
+    the painting with its corners pulled about, which is what a tilt of fifteen or twenty degrees does.
+    Returns the files and the truth, art pixels -> photograph pixels, one per photograph.
+    """
+    art = _art(3000, 4000, seed)
+    rng = np.random.default_rng(seed)
+    paths, truth = [], []
+    for k, (x0, y0) in enumerate([(200, 150), (1700, 150), (200, 1200), (1700, 1200)]):
+        w, h = 2100, 1600
+        box = np.float32([[x0, y0], [x0 + w, y0], [x0 + w, y0 + h], [x0, y0 + h]])
+        H = cv2.getPerspectiveTransform(np.float32(box + rng.uniform(-0.07, 0.07, (4, 2)) * [w, h]),
+                                        np.float32([[0, 0], [w, 0], [w, h], [0, h]]))
+        q = os.path.join(TMP, f"photo_{k + 1}.tif")
+        tifffile.imwrite(q, cv2.warpPerspective(art, H, (w, h), flags=cv2.INTER_CUBIC))
+        paths.append(q)
+        truth.append(H)
+    return paths, truth
+
+
+def test_the_kept_rectangle_stays_inside_the_photograph():
+    """What is cut out of a flattened photograph holds its own pixels only, and most of them."""
+    rng = np.random.default_rng(2)
+    for _ in range(6):
+        quad = np.float32(np.float32([[0, 0], [1200, 0], [1200, 900], [0, 900]]) + rng.uniform(-90, 90, (4, 2)))
+        x0, y0, x1, y1 = flatten._inscribed(quad)
+        for c in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)):
+            assert cv2.pointPolygonTest(quad.reshape(-1, 1, 2), (float(c[0]), float(c[1])), True) >= 0, f"{c} is outside {quad}"
+        assert (x1 - x0) * (y1 - y0) > 0.6 * cv2.contourArea(quad.reshape(-1, 1, 2))
+
+
+def test_photographs_of_one_flat_thing_are_put_back_into_one_plane():
+    """The flattening has to agree with itself to a pixel, keep only real pixels, and then stitch."""
+    paths, cams = _photos()
+    store = tiles.TileStore()
+    flat, report = flatten.flatten(store, paths, os.path.join(TMP, "flattened"))
+    Hs, _ = flatten.homographies(store, paths)
+
+    # art -> the plane the set was flattened onto, by way of each photograph: every route must agree
+    xs, ys = np.meshgrid(np.linspace(1750, 2250, 25), np.linspace(1250, 1700, 25))   # paint all four saw
+    pts = np.float32(np.c_[xs.ravel(), ys.ravel()]).reshape(-1, 1, 2)
+    routes = [cv2.perspectiveTransform(pts, H @ cam).reshape(-1, 2) for H, cam in zip(Hs, cams)]
+    spread = max(float(np.hypot(*(a - b).T).max()) for a in routes for b in routes)
+    assert spread < 2.0, f"the routes into the plane disagree by {spread:.2f} px"
+
+    for k in range(len(flat)):
+        assert report["kept"][k] > 0.5, f"photo {k + 1} lost {100 * (1 - report['kept'][k]):.0f}% of itself"
+
+    lay, rep = align_set(store, flat, mesh=True)
+    assert not rep["disconnected"]
+    worst = max(v["rms"] for v in rep["residual"].values())
+    # the same four windows cut out with no perspective at all sit at 0.9 px: this painting is only
+    # 4000 px wide, and what is left here is the resampling, not the flattening.  A flattening gone
+    # wrong is tens of pixels or a set that will not join at all, which is what this catches.
+    assert worst < 2.5, f"the flattened photographs still disagree by {worst:.2f} px"
 
 
 def test_align_joins_groups_that_no_single_pair_ties():

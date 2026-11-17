@@ -25,7 +25,7 @@ from session import Session, _sliced, resolve_folder
 
 STATES = ("queued", "running", "ok", "review", "failed", "skipped", "canceled")
 SESSION_EXT = ".artstitch.json"
-SKIP_DIRS = ("stitched",)                        # the default output folder is never a source
+SKIP_DIRS = ("stitched", "flattened")            # the output folder, and the flattened photos, are never found from above
 
 
 def scan(folder: str, recursive: bool = False, exts=tiles.TIFF_EXTS) -> list[dict]:

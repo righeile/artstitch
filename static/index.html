@@ -50,6 +50,7 @@
       <div class="row wrap" style="margin-top:10px">
         <label class="chk"><input type="checkbox" id="scanRecursive"> include subfolders</label>
         <label class="chk"><input type="checkbox" id="scanAll"> also PNG and JPEG</label>
+        <label class="chk"><input type="checkbox" id="scanCamera"> photographs, not scans</label>
         <span class="spacer"></span>
         <button class="ghost" id="btnScanFiles">Choose files by hand&hellip;</button>
         <button class="ghost" id="btnLoadSession">Open a saved session&hellip;</button>
@@ -57,6 +58,12 @@
       </div>
       <p class="hint">Files that are much larger than the others of their name are taken for an earlier
         result and left unchecked. Anything can be checked by hand.</p>
+      <p class="hint">Photographs are each a view of the artwork from somewhere, so they are put back into
+        one plane before anything else &mdash; flattened copies are written to a <span class="mono">flattened</span>
+        folder beside them, and it is those that are stitched &mdash; point the folder at it to open them again
+        without flattening twice. The plane is one photograph's own: hold the camera square to the wall for at
+        least one shot and the finished picture comes out square too.</p>
+      <div id="flattenProgress"></div>
     </div>
 
     <div id="setList"></div>

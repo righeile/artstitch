@@ -33,6 +33,7 @@ from werkzeug.exceptions import HTTPException
 import batch as B
 import color
 import dust
+import flatten
 import export
 import tiles
 from labkit import browse as LKB
@@ -266,6 +267,23 @@ def colours():
 TRIM_MM = 12.0          # cut off the sides a scan runs off the glass on, unless the page says otherwise
 
 
+@app.route("/api/flatten", methods=["POST"])
+def flatten_photos():
+    """Photographs of a flat artwork -> flattened copies beside them, which open as an ordinary set."""
+    paths = body().get("paths") or []
+    for p in paths:
+        if not os.path.isfile(p):
+            raise Problem(f"not a file: {p}")
+    if len(paths) < 2:
+        raise Problem("flattening is for a set of photos; one photo is already its own plane")
+    out = Path(paths[0]).parent / "flattened"
+
+    def fn(progress, cancel):
+        new, report = flatten.flatten(STORE, paths, out, progress)
+        return {"paths": new, **report}
+    return jsonify({"job": start_job(fn, "flattening the photos")})
+
+
 @app.route("/api/open", methods=["POST"])
 def open_set():
     b = body()
@@ -274,7 +292,7 @@ def open_set():
         if not os.path.isfile(p):
             raise Problem(f"not a file: {p}")
     s = Session(paths, STORE, (b.get("name") or "").strip() or None)
-    s.trim_mm = TRIM_MM                        # a scan off a flatbed has a bent strip wherever the sheet ran off it
+    s.trim_mm = 0.0 if b.get("camera") else TRIM_MM   # a scan off a flatbed has a bent strip wherever the sheet ran off it; a photo has no glass
     tilts = b.get("tilts")                     # degrees the paper lay at on the glass, one per scan
     if tilts is not None:
         if len(tilts) != len(paths):
