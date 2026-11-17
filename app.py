@@ -602,7 +602,7 @@ def batch_run():
     root = b.get("root") or (rows[0]["folder"] if rows else ".")
 
     def fn(progress, cancel):
-        tally = B.run(rows, preset, STORE, b.get("colour") or {}, progress, cancel)
+        tally = B.run(rows, preset, STORE, b.get("colour") or {}, progress, cancel, bool(b.get("camera")))
         return {"tally": tally, "report": B.write_report(rows, root) if any(r["include"] for r in rows) else ""}
     STATE["batch"] = {"rows": rows, "job": start_job(fn, "batch")}
     return jsonify({"job": STATE["batch"]["job"]})

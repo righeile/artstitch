@@ -864,16 +864,22 @@ def test_a_photographed_rectangle_gives_back_its_true_shape():
 
 def test_marking_the_corners_squares_the_picture():
     """Four corners and the artwork measured: what was a rectangle on the wall comes out a rectangle on
-    the screen, the right way up and the right shape, after one more warp of the original photographs."""
+    the screen, the right way up and the right shape, after one more warp of the original photographs.
+    The set comes out of a batch, which flattens photographs first and keeps how, so its session squares."""
+    import batch
     paths, cams = _photos()
     store = tiles.TileStore()
-    out = os.path.join(TMP, "squared")
-    flat, rep = flatten.flatten(store, paths, out)
-    s = Session(flat, store, "squared")
-    s.photos = [str(q) for q in paths]
-    s.cam = {k: rep[k] for k in ("reference", "h", "origin")} | {"dir": out}
-    s.trim_mm = 0.0
-    s.auto()
+    folder = os.path.join(TMP, "photographed")
+    os.makedirs(folder)
+    for k, p in enumerate(paths, 1):
+        os.symlink(p, os.path.join(folder, f"wall {k}.tif"))
+    rows = batch.rows_from(batch.scan(folder))
+    preset = {"name": "t", "folder": "out", "overwrite": "replace", "outputs": [{"kind": "jpg", "name": "{name}", "size": "long", "long": 600}]}
+    batch.run(rows, preset, store, {}, camera=True)
+    assert rows[0]["state"] in ("ok", "review") and rows[0]["outputs"], rows[0]
+    s = Session.load(rows[0]["session"], store)
+    assert s.photos == [os.path.join(folder, f"wall {k}.tif") for k in (1, 2, 3, 4)] and s.trim_mm == 0.0
+    assert all(os.path.dirname(q) == os.path.join(folder, "flattened") for q in s.paths)
 
     art = np.float32([[500, 400], [3300, 400], [500, 2600], [3300, 2600]])       # tl, tr, bl, br, in art px
     def in_view():                                                              # the same paint, in plane view px

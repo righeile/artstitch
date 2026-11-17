@@ -182,6 +182,10 @@ paper edges, paper edges that disagree, a small crop) is marked **review**; its
 exactly as the batch left it. A
 `artstitch_batch_<time>.csv` lists every set. With *if a file already exists* on
 **skip**, running the same folder again only does what is missing.
+With *photographs, not scans* ticked, each set is flattened onto one plane first,
+as on the Scans page (name the photos `name 1`, `name 2` ... like scans), and it
+comes out on its best-connected photo's plane: squaring needs the corners marked,
+so open the set afterwards to do that.
 
 ## Add-ons
 

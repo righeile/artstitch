@@ -20,6 +20,7 @@ from pathlib import Path
 
 import color
 import export
+import flatten
 import tiles
 from session import Session, _sliced, resolve_folder
 
@@ -64,8 +65,9 @@ def _done(session_path: str) -> bool:
         return False
 
 
-def _one(row: dict, preset: dict, store, colour: dict, progress) -> None:
+def _one(row: dict, preset: dict, store, colour: dict, progress, camera: bool = False) -> None:
     files = [f["path"] for f in row["files"] if f.get("include", True)]
+    photos = files if camera and len(files) > 1 else []
     out = resolve_folder(preset.get("folder", ""), row["folder"])
     keep = os.path.join(out, row["name"] + SESSION_EXT)
     if preset.get("overwrite") == "skip" and _done(keep):
@@ -74,8 +76,13 @@ def _one(row: dict, preset: dict, store, colour: dict, progress) -> None:
     def keep_session():
         row["session"] = s.save(export.target(keep, "number" if preset.get("overwrite", "number") == "number" else "replace", set()))
 
+    if photos:                                          # photographs: onto one plane first, as the Scans page does
+        flat = os.path.join(os.path.dirname(files[0]), "flattened")
+        files, rep = flatten.flatten(store, photos, flat, _sliced(progress, 0, 0.2))
     s = Session(files, store, row["name"])
-    s.auto(_sliced(progress, 0, 0.55))
+    if photos:
+        s.photos, s.cam = photos, {"reference": rep["reference"], "h": rep["h"], "origin": rep["origin"], "dir": flat}
+    s.auto(_sliced(progress, 0.2 if photos else 0, 0.55))
     if s.report.get("disconnected"):                    # an export would be the pieces side by side: keep the session to open, say why
         keep_session()
         row["qc"] = s.qc()
@@ -92,9 +99,10 @@ def _one(row: dict, preset: dict, store, colour: dict, progress) -> None:
 
 
 def run(rows: list[dict], preset: dict, store, colour: dict | None = None, progress=lambda p, m="": None,
-        cancel=lambda: False) -> dict:
+        cancel=lambda: False, camera: bool = False) -> dict:
     """Process the included rows one after another.  Returns the tally by state.  ``cancel`` is looked at between
-    sets: the set in progress is finished (minutes of work are not thrown away), the ones still queued are not run."""
+    sets: the set in progress is finished (minutes of work are not thrown away), the ones still queued are not run.
+    ``camera``: the sets are photographs, flattened onto one plane before they are stitched."""
     bad = export.check_preset(preset)
     if bad:
         raise ValueError("; ".join(bad))
@@ -114,7 +122,7 @@ def run(rows: list[dict], preset: dict, store, colour: dict | None = None, progr
             progress((i + p) / len(todo), f"{row['name']} ({i + 1}/{len(todo)}): {m}")
 
         try:
-            _one(row, preset, store, colour or {}, step)
+            _one(row, preset, store, colour or {}, step, camera)
         except Exception as e:                              # this set only: report it, go on to the next
             row["state"], row["error"] = "failed", f"{type(e).__name__}: {e}"
             traceback.print_exc()

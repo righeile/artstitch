@@ -1708,7 +1708,7 @@
       const folder = batchPick.value.trim();
       if (!folder) return toast('Give a folder first.', 'warn');
       remember('folder', folder);
-      const r = await req('/api/scan', 'POST', { folder, recursive: $('batchRecursive').checked, all_images: $('batchAll').checked });
+      const r = await req('/api/scan', 'POST', { folder, recursive: $('batchRecursive').checked, all_images: $('batchAll').checked || $('batchCamera').checked });
       Object.assign(S.batch, { sets: r.sets, status: [], root: folder, open: new Set() });
       $('batchSetup').classList.toggle('hidden', !r.sets.length);
       put('batchProgress', null);
@@ -1722,7 +1722,7 @@
       if (!preset) return toast('Choose a preset to save with.', 'warn');
       guard(async () => {
         B.status = [];
-        B.job = (await req('/api/batch/run', 'POST', { sets: B.sets, preset, colour: batchColour(), root: B.root })).job;
+        B.job = (await req('/api/batch/run', 'POST', { sets: B.sets, preset, colour: batchColour(), root: B.root, camera: $('batchCamera').checked })).job;
         pollBatch();
       });
     };
