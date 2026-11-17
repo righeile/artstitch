@@ -822,8 +822,7 @@ def test_the_kept_rectangle_stays_inside_the_photograph():
         assert (x1 - x0) * (y1 - y0) > 0.6 * cv2.contourArea(quad.reshape(-1, 1, 2))
     # a frame seen through a barrel lens, its bend taken out, has its sides bowed in: all of the rectangle inside it
     w, h = 1200, 900
-    t = np.linspace(0, 1, 33)[:-1, None]
-    rim = np.concatenate([t * [w - 1, 0], [w - 1, 0] + t * [0, h - 1], [w - 1, h - 1] - t * [w - 1, 0], [0, h - 1] - t * [0, h - 1]])
+    rim = flatten._rim(w, h)
     poly = flatten.undistort(rim, flatten._K((h, w)), -0.2)
     assert np.allclose(flatten.distort(poly, flatten._K((h, w)), -0.2), rim)             # and back again
     x0, y0, x1, y1 = flatten._inscribed(poly)
@@ -881,6 +880,42 @@ def test_a_lens_bend_is_read_off_the_overlaps_and_taken_out():
     assert worst < 2.5, f"the flattened photographs still disagree by {worst:.2f} px"
 
 
+def test_a_photograph_from_far_round_is_matched_and_the_square_one_is_the_plane():
+    """A photograph from 60 degrees round shares too few SIFT features with one taken square on to trust, until
+    the square one is looked at squashed (ASIFT).  Listed first, the steep one used to be the plane, the square one
+    squeezed onto it; now the plane is the square one's, and the steep one keeps the part of itself worth its pixels."""
+    art = _art(1600, 2800, 5)
+    rng = np.random.default_rng(5)
+    for _ in range(1500):                   # brush marks: the 1/f paint alone squashes into mush, a real wall does not
+        cv2.ellipse(art, tuple(int(v) for v in rng.integers(0, (2800, 1600))), tuple(int(v) for v in rng.integers(6, 40, 2)),
+                    float(rng.uniform(0, 180)), 0, 360, tuple(int(v) for v in rng.integers(20, 235, 3)), -1, cv2.LINE_AA)
+    W, H = 800, 600
+    K = np.array([[2.0 * W, 0, (W - 1) / 2], [0, 2.0 * W, (H - 1) / 2], [0, 0, 1.0]])
+    def view(ry, at, across):               # art px -> photo px: turned ``ry`` degrees, ``across`` art px wide where it looks
+        R = cv2.Rodrigues(np.float64([0, np.radians(ry), 0]))[0]
+        return K @ np.c_[R[:, 0], R[:, 1], [0, 0, 2.0 * across] - R @ [at[0], at[1], 0]]
+    cams = [view(-60, (1000, 800), 900), view(0, (600, 800), 800)]           # the steep one first
+    paths = [os.path.join(TMP, f"steep_{k + 1}.tif") for k in range(2)]
+    for q, c in zip(paths, cams):           # at 4x and shrunk, as a lens blurs: the far end of a steep view must not alias
+        tifffile.imwrite(q, cv2.resize(cv2.warpPerspective(art, np.diag([4.0, 4, 1]) @ c, (4 * W, 4 * H)), (W, H), interpolation=cv2.INTER_AREA))
+    store = tiles.TileStore()
+    m = flatten._matches(*flatten._features(store.proxy(paths[1], 1, gray=True)), *flatten._features(store.proxy(paths[0], 1, gray=True)))
+    assert m is None or flatten._pair(*m)[1].sum() < flatten.SURE_INLIERS, "plain SIFT was sure of them: not steep enough to test anything"
+
+    flat, report = flatten.flatten(store, paths, os.path.join(TMP, "flattened_steep"))
+    assert report["reference"] == 1, "the photograph from far round became the plane"
+    xs, ys = np.meshgrid(np.linspace(450, 950, 21), np.linspace(600, 1000, 17))     # paint both see, the steep one near
+    pts = np.float64(np.c_[xs.ravel(), ys.ravel()]).reshape(-1, 1, 2)
+    a, b = (cv2.perspectiveTransform(pts, np.array(h) @ c).reshape(-1, 2) for h, c in zip(report["h"], cams))
+    spread = float(np.hypot(*(a - b).T).max())
+    assert spread < 1.5, f"the routes into the plane disagree by {spread:.2f} px"
+    assert report["kept"][1] > 0.95 and 0.5 < report["kept"][0] < flatten.MAX_STRETCH ** 2, report["kept"]
+    lay, rep = align_set(store, flat, mesh=True, max_deg=0.0)                       # as a set of photographs is stitched
+    assert not rep["disconnected"]
+    worst = max(v["rms"] for v in rep["residual"].values())
+    assert worst < 1.5, f"the flattened photographs still disagree by {worst:.2f} px"
+
+
 def _shot(w_mm, h_mm, rx, ry, f=3000.0, W=4000, H=3000, dist=900.0):
     """Where a pinhole camera turned ``rx``/``ry`` degrees sees the corners of a flat ``w_mm`` x ``h_mm`` rectangle."""
     obj = np.float32([[-w_mm, -h_mm, 0], [w_mm, -h_mm, 0], [-w_mm, h_mm, 0], [w_mm, h_mm, 0]]) / 2.0
@@ -922,6 +957,7 @@ def test_marking_the_corners_squares_the_picture():
     s = Session.load(rows[0]["session"], store)
     assert s.photos == [os.path.join(folder, f"wall {k}.tif") for k in (1, 2, 3, 4)] and s.trim_mm == 0.0
     assert all(os.path.dirname(q) == os.path.join(folder, "flattened") for q in s.paths)
+    assert np.degrees(np.abs(s.layout.theta)).max() < 0.5, "photographs flattened into one plane were turned against each other"
 
     art = np.float32([[500, 400], [3300, 400], [500, 2600], [3300, 2600]])       # tl, tr, bl, br, in art px
     def in_view():                                                              # the same paint, in plane view px

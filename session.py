@@ -144,7 +144,7 @@ class Session:
         if max_deg is not None:
             self.max_deg = float(max_deg)
         lay, report = align_set(self.store, self.paths, _sliced(progress, 0, 0.8 if seams else 1),
-                                poses=poses, max_deg=self.max_deg,
+                                poses=poses, max_deg=0.0 if self.cam else self.max_deg,    # photographs come flattened into one plane, cut upright
                                 tilts=None if poses is not None else self.tilts, trim=self.trim_px(),
                                 mesh=self.warp, scale=not self.warp)
         self.layout, self.report, self.plan, self.geom, self._sides = lay, clean(report), None, None, None

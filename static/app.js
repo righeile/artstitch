@@ -407,6 +407,7 @@
     if (!res.open) return;
     $('setName').value = res.name;
     $('maxDeg').value = res.max_deg;
+    $('maxDeg').disabled = !!res.camera;
     $('trimMm').value = res.trim_mm || 0;
     $('noWarp').checked = res.warp === false;
     $('evenLight').checked = res.even !== false;

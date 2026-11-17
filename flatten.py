@@ -6,18 +6,32 @@ because the subject is flat.  So the one thing a camera set needs that a scan se
 is to be flattened first; after that it is a set of scans, and the coarse search, the mesh,
 the seams, the patches and the export all work on it unchanged.
 
-The plane is one of the photographs' own -- the best connected one.  Nothing here knows the
-camera, so nothing here can know which way the wall faced: if that photograph was taken at an
-angle, the finished picture keeps that angle.  Hold the camera square for one shot and the
-whole set comes out square.
+The plane is one of the photographs' own: the one the others lose the least detail onto, which
+is the one taken nearest and most square-on.  Put a frontal photograph onto a steep one's plane
+and its far side is squeezed into a few pixels; the other way round only the steep one's far side
+is stretched, and that had little detail to lose.  Nothing here knows the camera, so nothing here
+can know which way the wall faced: if even that photograph was taken at an angle, the finished
+picture keeps that angle.  Hold the camera square for one shot, from no farther off than the
+rest, and the whole set comes out square.
 
 A real lens is not a pinhole: it bends straight lines, most at the corners, and then two
 photographs differ by a homography only after that bend is taken out.  So the bend is read off
 the same matches (``lens``) and taken out in the same warp.
 
+Not every wall can be shot from in front of it.  Past about 50 degrees between two photographs
+SIFT finds nothing to match, because a patch seen that far round is squashed along one direction
+and SIFT forgives only rotation and scale.  So photographs that no chain of sure matches joins are
+looked at again through simulated tilts (ASIFT, Morel and Yu 2009): each one squashed every way,
+at up to five times, and its features looked up among the other photograph's own.  That is a few
+seconds a photograph, so it is spent only where plain SIFT left the set in pieces.  Seen that far
+round, the far end of the wall shrinks toward the horizon, and put back into the plane it would be
+all stretch and no detail, more pixels than the rest of the photograph together: it is cut off
+where it would be stretched MAX_STRETCH times as much as the photograph's best part.
+
 Each flattened photograph is cut down to the largest upright rectangle inside the warped
 frame, so that no tile carries any "nothing here" corners -- a mask only this stage would
-know about, which nothing downstream reads.
+know about, which nothing downstream reads.  A photograph from far round lands as a long wedge,
+and the rectangle inside a wedge holds less of it: about a half at 40 to 50 degrees, under a third at 60.
 """
 
 from __future__ import annotations
@@ -30,12 +44,16 @@ import numpy as np
 import tifffile
 from PIL import Image
 from scipy.optimize import minimize_scalar
+from scipy.sparse.csgraph import connected_components
 
 import edges
 
 MIN_INLIERS = 25          # matches that survive RANSAC before a pair is believed to be the same wall
+SURE_INLIERS = 100        # fewer, and the pair was probably seen too far round for SIFT: worth the squashed views
 WORK_PX = 1500            # long side the features are found on: more is slower and finds no more pairs
-MAX_STRETCH = 3.0         # a homography that blows a photograph up by more than this is a bad fit, not a steep angle
+MAX_STRETCH = 3.0         # lengths: a photograph blown up this much where it is stretched least is a bad fit; a part of one
+                          # stretched this much more than that is seen too far round to keep; the plane is the photograph's
+                          # that shrinks none of the others this much, or the least
 LENS_GAIN = 0.9           # a lens bend is believed only if it takes a tenth off how much the matches disagree
 
 
@@ -43,9 +61,10 @@ def _quiet(p: float, m: str) -> None:
     pass
 
 
-def _features(gray: np.ndarray):
+def _features(gray: np.ndarray, tilted: bool = False):
+    """SIFT; ``tilted``: on every squashed view of the photograph too, at its own pixels (ASIFT)."""
     sift = cv2.SIFT_create(nfeatures=2000)
-    return sift.detectAndCompute(np.clip(gray, 0, 255).astype(np.uint8), None)
+    return (cv2.AffineFeature_create(sift, maxTilt=5) if tilted else sift).detectAndCompute(np.clip(gray, 0, 255).astype(np.uint8), None)
 
 
 def _matches(ka, da, kb, db):
@@ -60,10 +79,53 @@ def _matches(ka, da, kb, db):
 
 
 def _pair(src, dst) -> tuple[np.ndarray | None, np.ndarray]:
-    """Homography taking b's points to a's, and which of them agreed (all False if too few did)."""
-    H, inl = cv2.findHomography(src, dst, cv2.USAC_MAGSAC, 3.0, maxIters=20000, confidence=0.999)
-    inl = np.zeros(len(src), bool) if inl is None else inl.ravel() > 0
-    return (H, inl) if H is not None and inl.sum() >= MIN_INLIERS else (None, np.zeros(len(src), bool))
+    """Homography taking b's points to a's, and which of them agreed (all False if too few did).
+
+    Fitted in whichever photograph sees the overlap with more pixels: there a pixel of error is less of the wall.
+    The other way round, a photograph taken far round would set the fit, and its far end is a few pixels for a lot.
+    """
+    def fit(s, d):
+        H, inl = cv2.findHomography(s, d, cv2.USAC_MAGSAC, 3.0, maxIters=20000, confidence=0.999)
+        inl = np.zeros(len(s), bool) if inl is None else inl.ravel() > 0
+        return (H, inl) if H is not None and inl.sum() >= MIN_INLIERS else (None, np.zeros(len(s), bool))
+    H, inl = fit(src, dst)
+    if H is not None and np.median(np.linalg.det(H) / (np.c_[src[inl], np.ones(inl.sum())] @ H[2]) ** 3) < 1:
+        Hi, inl = fit(dst, src)                         # a's pixels are the coarser: measure in b's
+        H = None if Hi is None else np.linalg.inv(Hi)
+    return H, inl
+
+
+def _rim(w: int, h: int) -> np.ndarray:
+    """A photograph's frame, 32 points a side: closely enough to follow the curve a lens's bend gives it."""
+    t = np.linspace(0, 1, 33)[:-1, None]
+    return np.concatenate([t * [w - 1, 0], [w - 1, 0] + t * [0, h - 1], [w - 1, h - 1] - t * [w - 1, 0], [0, h - 1] - t * [0, h - 1]])
+
+
+def _w(M, pts) -> np.ndarray:
+    """``M``'s denominator at ``pts``, signed positive where it is largest: ``M`` magnifies areas det(M) / w^3 there,
+    so w is how little it stretches each one, and where it changes sign the plane's horizon runs through."""
+    w = np.c_[pts, np.ones(len(pts))] @ M[2]
+    return w * np.sign(w[np.abs(w).argmax()])
+
+
+def _least(M, pts) -> float:
+    """How much ``M`` magnifies a photograph's areas where it magnifies them least, ``pts`` its frame (pinhole pixels):
+    below 1 the plane has fewer pixels for that part than the photograph had."""
+    return abs(float(np.linalg.det(M))) / float(_w(M, pts).max()) ** 3
+
+
+def _clip(pts, M) -> np.ndarray:
+    """The part of a photograph's frame ``pts`` (pinhole pixels) that ``M`` stretches at most MAX_STRETCH times as much as
+    its least-stretched part.  w is linear in the photograph, so the cut is a straight line across it."""
+    w = _w(M, pts)
+    lim = w.max() / MAX_STRETCH ** (2 / 3)             # areas go as w^-3, lengths as w^-3/2
+    out = []
+    for p, q, a, b in zip(pts, np.roll(pts, -1, 0), w, np.roll(w, -1)):
+        if a >= lim:
+            out.append(p)
+        if (a >= lim) != (b >= lim):
+            out.append(p + (lim - a) / (b - a) * (q - p))
+    return np.array(out)
 
 
 def _K(shape, A=None) -> np.ndarray:
@@ -221,7 +283,8 @@ def rectangle(quad: np.ndarray, centre, f: float | None = None, ratio: float | N
 
 def homographies(store, paths, progress=_quiet) -> tuple[list[np.ndarray], dict]:
     """One homography per photograph, taking its own pixels -- with the lens's bend taken out, the report's
-    ``k1`` -- into the best-connected one's plane."""
+    ``k1`` -- into the plane of the one that loses the others the least detail, the report's ``reference``.
+    They are chained from the best-connected one, where the chains are shortest."""
     n = len(paths)
     if n == 1:
         return [np.eye(3)], {"reference": 0, "inliers": {}, "k1": 0.0}
@@ -237,11 +300,29 @@ def homographies(store, paths, progress=_quiet) -> tuple[list[np.ndarray], dict]
     found = {}
     for a in range(n):
         for b in range(a + 1, n):
-            progress(0.4 + 0.4 * (a * n + b) / (n * n), f"matching {a + 1} and {b + 1}")
+            progress(0.4 + 0.3 * (a * n + b) / (n * n), f"matching {a + 1} and {b + 1}")
             m = _matches(*feats[a], *feats[b])
             if m is not None:
                 found[a, b] = m
     fits = {ab: _pair(*m) for ab, m in found.items()}
+    tied = np.zeros((n, n), bool)
+    for (a, b), (_, inl) in fits.items():
+        tied[a, b] = inl.sum() >= SURE_INLIERS
+    _, part = connected_components(tied, directed=False)
+    cross = [(a, b) for a in range(n) for b in range(a + 1, n) if part[a] != part[b]]
+    tilted = {}
+    for i, (a, b) in enumerate(cross):                  # pieces, or held by a thread: try squashed views
+        progress(0.7 + 0.1 * i / len(cross), f"matching {a + 1} and {b + 1} from other angles")
+        for k in (a, b):
+            if k not in tilted:
+                tilted[k] = _features(store.proxy(paths[k], f, gray=True), tilted=True)
+        mb, ma = _matches(*feats[a], *tilted[b]), _matches(*feats[b], *tilted[a])     # each way round: (query's, train's)
+        ms = [m for m in (mb, ma and ma[::-1]) if m is not None]
+        if ms:
+            m = tuple(np.concatenate(z) for z in zip(*ms))
+            fit = _pair(*m)
+            if fit[1].sum() >= SURE_INLIERS:            # forty views of each make chance agreements likelier: only a sure pair counts
+                found[a, b], fits[a, b] = m, fit
     k1 = lens([(dst[i], src[i], Ks[a], Ks[b]) for (a, b), (src, dst) in found.items()
                for i in [fits[a, b][1]] if i.any()])
     if k1:                                              # again on the straightened points: the corners agree now too
@@ -262,7 +343,14 @@ def homographies(store, paths, progress=_quiet) -> tuple[list[np.ndarray], dict]
     for k in sorted(range(n), key=lambda k: _depth(par, k)):
         if out[k] is None:
             out[k] = out[par[k]] @ H[par[k], k]
-    return [Ai @ (M / M[2, 2]) @ A for M in out], {"reference": root, "k1": k1, "inliers": {
+    out = [Ai @ (M / M[2, 2]) @ A for M in out]
+    rims = [undistort(_rim(*store.get(p).shape[1::-1]), _K(store.get(p).shape), k1) for p in paths]
+    def finest(r):                                      # the least photo r's plane leaves any photograph; 0: it blows one up
+        m = [_least(np.linalg.inv(out[r]) @ M, q) for M, q in zip(out, rims)]
+        return min(m) if max(m) <= MAX_STRETCH ** 2 else 0.0
+    ref = max(range(n), key=lambda r: (finest(r), r == root))
+    out = [np.linalg.inv(out[ref]) @ M for M in out]
+    return [M / M[2, 2] for M in out], {"reference": ref, "k1": k1, "inliers": {
         f"{a + 1}-{b + 1}": int(w[a, b]) for a in range(n) for b in range(a + 1, n) if w[a, b]}}
 
 
@@ -307,15 +395,11 @@ def flatten(store, paths, out_dir, progress=_quiet, Hs=None, k1: float = 0.0) ->
         img = store.get(p).rgb
         h, w = img.shape[:2]
         K = _K(img.shape)
-        t = np.linspace(0, 1, 33)[:-1, None]            # the frame, closely enough to follow the lens's curve
-        rim = np.concatenate([t * [w - 1, 0], [w - 1, 0] + t * [0, h - 1], [w - 1, h - 1] - t * [w - 1, 0], [0, h - 1] - t * [0, h - 1]])
-        poly = cv2.perspectiveTransform(undistort(rim, K, k1).reshape(-1, 1, 2), H).reshape(-1, 2)
-        quad = poly[::32]
-        side = np.hypot(*(np.roll(quad, -1, 0) - quad).T)
-        if side.max() > MAX_STRETCH * max(w, h):
-            raise ValueError(f"photo {k + 1} does not look like the same flat thing as the others")
-        x0, y0, x1, y1 = _inscribed(poly)
+        rim = undistort(_rim(w, h), K, k1)
+        x0, y0, x1, y1 = _inscribed(cv2.perspectiveTransform(_clip(rim, H).reshape(-1, 1, 2), H).reshape(-1, 2))
         x0, y0, x1, y1 = x0 + 2, y0 + 2, x1 - 2, y1 - 2        # cubic reads two pixels out: stay that far inside the frame
+        if _least(H, rim) > MAX_STRETCH ** 2 or x1 <= x0 or y1 <= y0:      # blown up as a whole, or nothing left of it
+            raise ValueError(f"photo {k + 1} does not look like the same flat thing as the others")
         T = np.array([[1.0, 0, -x0], [0, 1.0, -y0], [0, 0, 1.0]])
         flat = _warp(img, T @ H, K, k1, (x1 - x0 + 1, y1 - y0 + 1))
         kept.append(round((x1 - x0 + 1) * (y1 - y0 + 1) / float(w * h), 3))

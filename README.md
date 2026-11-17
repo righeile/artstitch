@@ -53,8 +53,14 @@ the histology parts taken out.
    **Photographs, not scans** is for an artwork too large for any flatbed, shot
    in parts from a tripod or by hand: each photograph sees the wall through a
    perspective of its own, and before anything else they are warped into one
-   plane -- the best-connected photograph's own -- and written beside the
-   originals in a `flattened` folder, which later scans skip. A lens that bows
+   plane -- that of the photograph taken nearest and most square-on, which the
+   others lose the least detail onto -- and written beside the originals in a
+   `flattened` folder, which later scans skip. A wall that can only be shot
+   from far round is matched too: past about 40° between two photographs, where
+   ordinary matching finds too little to be sure of (and past 50° nothing at
+   all), the pair is looked at again through simulated tilts, a few seconds a
+   photograph. The far end of a photograph
+   taken that far round, all stretch and no detail, is cut off. A lens that bows
    straight lines is read off the overlaps too, one bend for the set, and taken
    out in the same warp -- but only when it fits the matches clearly better than
    no bend at all, so a lens with none to speak of is left alone. Nothing is
@@ -62,8 +68,11 @@ the histology parts taken out.
    flattened copies. The box also lets PNG and JPEG in, and turns off the trim
    that a flatbed needs and a camera does not.
 2. **Stitch**: every pair is searched for its overlap, rotation included
-   (±3° by default; the box is on the page). Scans that came from ArtStitch Scan
-   bring the tilt the scanner measured for each part, and the search starts from
+   (±3° by default; the box is on the page). Photographs are not turned at all:
+   flattening has already put them in one plane, cut upright, and a turn found
+   anyway is a wrong one that the warp would then have to bend back. Scans that
+   came from ArtStitch Scan bring the tilt the scanner measured for each part,
+   and the search starts from
    it, so the ±3° is spent on what the scanner could not know rather than on the
    tilt it already did. **Trim where it runs off the glass … mm**
    (12 by default) cuts that much off a scan before the overlaps are matched in
@@ -187,8 +196,8 @@ exactly as the batch left it. A
 **skip**, running the same folder again only does what is missing.
 With *photographs, not scans* ticked, each set is flattened onto one plane first,
 as on the Scans page (name the photos `name 1`, `name 2` ... like scans), and it
-comes out on its best-connected photo's plane: squaring needs the corners marked,
-so open the set afterwards to do that.
+comes out on the plane of its most square-on photo: squaring needs the corners
+marked, so open the set afterwards to do that.
 
 ## Add-ons
 
@@ -224,9 +233,13 @@ reported in the terminal and left out.
   about 0.1 px rms after stitching, from a blind search and from a hand
   placement half a scan off and a degree crooked.
 - Photographs: measured against the Oxford VGG `graf` set and its hand-measured
-  ground truth, the plane is recovered to 0.9 px at 20° between two shots, 1.3 px
-  at 30° and 2.4 px at 40°; past about 50° no matches are found at all. Shoot the
-  parts from roughly the same place and the overlaps generously.
+  ground truth, the plane is recovered to 0.7 px (median) between two shots up
+  to 40° apart, 1.1 px at 50° and 0.8 px at 60°, from 40° on through simulated
+  tilts at about 15 s a pair. A photograph from far round keeps about half of
+  itself at 40 to 50° and under a third at 60°: its far end is cut off, and of
+  the wedge that is left only an upright rectangle is used. Overlap the parts
+  generously, and take one of them square on from no farther off than the rest:
+  the result keeps that photograph's angle until it is squared.
 - The lens bend: synthetic photographs taken through a barrel lens give it back
   within 5 %, and squared, their marked rectangle comes out within 0.1 % of its
   measured shape with a 90.1° corner. The corners of a chessboard matched across
