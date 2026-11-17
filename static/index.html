@@ -121,7 +121,10 @@
     <p class="page-hint">The paper edges are found from the scanner lid showing around the sheet. Where there
       are none, or they are not to be trusted, set the angle by hand &mdash; type it, drag the slider, or
       draw a line along something that ought to be level. The crop is the largest rectangle that stays
-      inside the sheet; drag it to change it.</p>
+      inside the sheet; drag it to change it.
+      <span id="squareHint" hidden>Photographs keep the angle of whichever shot the set was flattened onto: mark the
+      four corners of the picture itself to put that right. Type its size as well if you have measured it &mdash; that
+      settles the shape outright, and gives the photographs a resolution they do not otherwise carry.</span></p>
 
     <div class="panel">
       <div class="row wrap">
@@ -131,11 +134,15 @@
         <input type="range" id="angleRange" min="-3" max="3" step="0.01" value="0" style="width:170px">
         <button class="small" id="btnAngle">Apply angle</button>
         <button class="small ghost" id="btnLevel">Draw a level line</button>
+        <button class="small ghost" id="btnSquare" hidden>Mark the picture’s corners</button>
+        <label class="row" id="sizeFields" hidden>its size <input type="number" id="sizeW" class="mini" style="width:62px" min="0" step="0.1" placeholder="w">
+          × <input type="number" id="sizeH" class="mini" style="width:62px" min="0" step="0.1" placeholder="h"> mm</label>
         <span class="divider"></span>
         <label class="row">Keep <input type="number" id="insetIn" class="mini" style="width:58px" min="0" step="1" value="12"> px clear of the edge</label>
         <button class="small" id="btnAutoCrop">Auto crop</button>
         <button class="small ghost" id="btnCropAll">Whole sheet</button>
       </div>
+      <div id="squareProgress"></div>
       <div id="straightenProgress"></div>
     </div>
 

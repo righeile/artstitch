@@ -280,7 +280,7 @@ def flatten_photos():
 
     def fn(progress, cancel):
         new, report = flatten.flatten(STORE, paths, out, progress)
-        return {"paths": new, **report}
+        return {"paths": new, "photos": paths, "dir": str(out), **report}
     return jsonify({"job": start_job(fn, "flattening the photos")})
 
 
@@ -292,6 +292,8 @@ def open_set():
         if not os.path.isfile(p):
             raise Problem(f"not a file: {p}")
     s = Session(paths, STORE, (b.get("name") or "").strip() or None)
+    if b.get("cam"):                           # these were flattened from photographs: keep how, so it can be redone
+        s.photos, s.cam = [str(p) for p in b["cam"]["photos"]], {k: b["cam"][k] for k in ("reference", "h", "origin", "dir")}
     s.trim_mm = 0.0 if b.get("camera") else TRIM_MM   # a scan off a flatbed has a bent strip wherever the sheet ran off it; a photo has no glass
     tilts = b.get("tilts")                     # degrees the paper lay at on the glass, one per scan
     if tilts is not None:
@@ -356,6 +358,26 @@ def align():
         s.auto(progress, poses, b.get("max_deg"))
         return s.summary()
     return jsonify({"job": start_job(fn, "stitching")})
+
+
+@app.route("/api/square", methods=["POST"])
+def square():
+    """Mark the four corners of something rectangular; the photographs are flattened onto that plane."""
+    s, b = ready(), body()
+    pts = b.get("corners") or []
+    if len(pts) != 4:
+        raise Problem("mark the artwork's four corners")
+    size = b.get("size")
+    try:
+        ok = not size or (len(size) == 2 and all(float(v) > 0 for v in size))
+    except (TypeError, ValueError):
+        ok = False
+    if not ok:
+        raise Problem("the artwork's width and height, or neither")
+
+    def fn(progress, cancel):
+        return {**s.square(pts, size, progress), **s.summary()}
+    return jsonify({"job": start_job(fn, "squaring the artwork")})
 
 
 @app.route("/api/straighten", methods=["POST"])

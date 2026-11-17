@@ -18,11 +18,13 @@ know about, which nothing downstream reads.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import cv2
 import numpy as np
 import tifffile
+from PIL import Image
 
 MIN_INLIERS = 25          # matches that survive RANSAC before a pair is believed to be the same wall
 WORK_PX = 1500            # long side the features are found on: more is slower and finds no more pairs
@@ -97,6 +99,75 @@ def _inscribed(quad: np.ndarray) -> tuple[int, int, int, int]:
     return int(np.ceil(x0)), int(np.ceil(y0)), int(np.floor(x1)), int(np.floor(y1))
 
 
+def focal_px(path, width: int) -> float | None:
+    """The focal length of a photograph in its own pixels, from what the camera wrote in the file.
+
+    A rectangle shot with the camera level and tilted only up or down -- a tripod squared to the wall,
+    which is how anyone careful does it -- is a symmetric trapezoid, and a symmetric trapezoid is the
+    one case the corners cannot be read alone: a tall rectangle tilted far looks exactly like a short
+    one tilted little.  The focal length settles it, and the camera already knows it.
+    """
+    try:
+        with Image.open(path) as im:
+            ex = im.getexif()
+        eq35 = ex.get(41989)                                     # FocalLengthIn35mmFilm, whole millimetres
+        if eq35:
+            return float(eq35) / 36.0 * width                    # 36 mm is the long side of the 35 mm frame
+    except Exception:                                            # a file with no camera behind it, or none that said
+        pass
+    return None
+
+
+def rectangle(quad: np.ndarray, centre, f: float | None = None, ratio: float | None = None) -> tuple[float, float, str]:
+    """How wide and how tall the rectangle a camera saw as ``quad`` really is, in the same pixels.
+
+    A rectangle photographed by a camera with square pixels and no skew tells you its own proportions
+    once the focal length is known, and if the camera was turned about both axes it tells you the
+    focal length too -- Zhang and He's whiteboard trick, where the two vanishing points of the sides
+    are conjugate.  Turned about one axis only there are no two vanishing points to use, and without
+    ``f`` from the file there is nothing left but to average the opposite sides, which is right for a
+    parallelogram and about three per cent out at a tilt of fifteen degrees.
+
+    ``quad`` is the corners, top-left, top-right, bottom-left, bottom-right.  ``ratio`` is the
+    artwork measured instead of guessed, which settles it outright.  Returns (w, h, how): whatever
+    the proportions, the rectangle is the size that keeps the area the quadrilateral had.
+
+    How well each route does, measured on eight real photographs of a chessboard (OpenCV's ``left*.jpg``,
+    640 x 480, a lens bent enough that k1 = -0.25) whose 8 x 5 grid of inner corners is a true 1.6:1:
+    with ``f`` from the file, within 3 % and usually within 1 %, the lens bend left in;  from the corners
+    alone, typically 3 % but once 25 %;  from the sides, 2 % to 25 %, worse than the corners more often
+    than not.  So: the size typed in beats the file, the file beats the corners, and the last two lines
+    of defence are both only worth a glance -- which is why the caller is told which one answered.
+    """
+    m = np.c_[np.asarray(quad, float) - np.asarray(centre, float), np.ones(4)]
+    m1, m2, m3, m4 = m
+    cross2 = lambda a, b: float(a[0] * b[1] - a[1] * b[0])
+    side = lambda a, b: float(np.hypot(*(a - b)[:2]))
+    area = 0.5 * abs(cross2(m3 - m2, m4 - m1))                            # the quadrilateral's own area
+    flat = (0.5 * (side(m1, m2) + side(m3, m4)), 0.5 * (side(m1, m3) + side(m2, m4)), "sides")
+    if ratio:
+        return math.sqrt(area * ratio), math.sqrt(area / ratio), "measured"
+    d2, d3 = np.cross(m2, m4) @ m3, np.cross(m3, m4) @ m2
+    if abs(d2) < 1e-9 or abs(d3) < 1e-9:
+        return flat
+    n2 = (np.cross(m1, m4) @ m3) / d2 * m2 - m1
+    n3 = (np.cross(m1, m4) @ m2) / d3 * m3 - m1
+    how = "camera"
+    if f is not None and f > 0:
+        f2 = float(f) ** 2
+    elif abs(n2[2] * n3[2]) < 1e-9:                      # one vanishing point at infinity: f is not in the corners
+        return flat
+    else:
+        f2, how = -(n2[0] * n3[0] + n2[1] * n3[1]) / (n2[2] * n3[2]), "corners"
+        if not (1.0 < f2 < 1e10):                        # shot square on, or four corners that were no rectangle
+            return flat
+    r2 = ((n2[0] ** 2 + n2[1] ** 2) / f2 + n2[2] ** 2) / ((n3[0] ** 2 + n3[1] ** 2) / f2 + n3[2] ** 2)
+    if not (4e-4 < r2 < 2.5e3):
+        return flat
+    ratio = math.sqrt(r2)
+    return math.sqrt(area * ratio), math.sqrt(area / ratio), how
+
+
 def homographies(store, paths, progress=_quiet) -> tuple[list[np.ndarray], dict]:
     """One homography per photograph, taking its own pixels into the best-connected one's plane."""
     n = len(paths)
@@ -141,12 +212,18 @@ def _depth(par: list[int], k: int) -> int:
     return d
 
 
-def flatten(store, paths, out_dir, progress=_quiet) -> tuple[list[str], dict]:
-    """Write a flattened copy of every photograph and return the new paths."""
-    Hs, report = homographies(store, paths, progress)
+def flatten(store, paths, out_dir, progress=_quiet, Hs=None) -> tuple[list[str], dict]:
+    """Write a flattened copy of every photograph and return the new paths.
+
+    ``Hs`` are homographies worked out before -- how the set is put back onto a plane chosen by hand
+    rather than onto a photograph's own (see ``rectangle``); the report carries them either way.
+    """
+    report: dict = {"reference": 0, "inliers": {}}
+    if Hs is None:
+        Hs, report = homographies(store, paths, progress)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    new, kept = [], []
+    new, kept, origin = [], [], []
     for k, (p, H) in enumerate(zip(paths, Hs)):
         progress(0.8 + 0.2 * k / len(paths), f"flattening photo {k + 1}")
         img = store.get(p).rgb
@@ -161,8 +238,12 @@ def flatten(store, paths, out_dir, progress=_quiet) -> tuple[list[str], dict]:
         T = np.array([[1.0, 0, -x0], [0, 1.0, -y0], [0, 0, 1.0]])
         flat = cv2.warpPerspective(img, T @ H, (x1 - x0 + 1, y1 - y0 + 1), flags=cv2.INTER_CUBIC)
         kept.append(round((x1 - x0 + 1) * (y1 - y0 + 1) / float(w * h), 3))
+        origin.append([x0, y0])
         q = out / (Path(p).stem + ".tif")
         tifffile.imwrite(q, flat, compression="zlib", photometric="rgb")
+        store.drop(q)                                   # flattened again onto another plane: forget the old pixels
         new.append(str(q))
     report["kept"] = kept
+    report["h"] = [H.tolist() for H in Hs]          # photograph pixel -> the plane, before the cut
+    report["origin"] = origin                       # where the cut starts in it: flattened pixel + this = plane
     return new, report

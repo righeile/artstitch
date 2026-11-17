@@ -839,6 +839,61 @@ def test_photographs_of_one_flat_thing_are_put_back_into_one_plane():
     assert worst < 2.5, f"the flattened photographs still disagree by {worst:.2f} px"
 
 
+def _shot(w_mm, h_mm, rx, ry, f=3000.0, W=4000, H=3000, dist=900.0):
+    """Where a pinhole camera turned ``rx``/``ry`` degrees sees the corners of a flat ``w_mm`` x ``h_mm`` rectangle."""
+    obj = np.float32([[-w_mm, -h_mm, 0], [w_mm, -h_mm, 0], [-w_mm, h_mm, 0], [w_mm, h_mm, 0]]) / 2.0
+    R = cv2.Rodrigues(np.float32([np.radians(rx), np.radians(ry), 0]))[0]
+    q = (np.float32([[f, 0, (W - 1) / 2], [0, f, (H - 1) / 2], [0, 0, 1]]) @ ((R @ obj.T).T + [0, 0, dist]).T).T
+    return q[:, :2] / q[:, 2:3]
+
+
+def test_a_photographed_rectangle_gives_back_its_true_shape():
+    """Two vanishing points settle the lens and the proportions at once -- unless the camera was turned
+    about one axis only, when the picture holds no width vanishing point and the lens must come from the file."""
+    for rx, ry in [(18, 22), (25, 10), (8, 30), (30, 35)]:
+        for w, h in [(280, 220), (200, 200), (150, 300)]:
+            W, H, how = flatten.rectangle(_shot(w, h, rx, ry), (1999.5, 1499.5))
+            assert how == "corners" and abs(W / H / (w / h) - 1) < 0.01, f"{rx}/{ry} {w}x{h}: {W/H:.3f} not {w/h:.3f}"
+
+    quad = _shot(280, 220, 14, 0)                           # turned about one axis: degenerate
+    W, H, how = flatten.rectangle(quad, (1999.5, 1499.5))
+    assert how == "sides" and 0.0 < W / H / (280 / 220) - 1 < 0.06       # the fallback, and how wrong it is
+    W, H, how = flatten.rectangle(quad, (1999.5, 1499.5), f=3000.0)
+    assert how == "camera" and abs(W / H / (280 / 220) - 1) < 0.01
+
+
+def test_marking_the_corners_squares_the_picture():
+    """Four corners and the artwork measured: what was a rectangle on the wall comes out a rectangle on
+    the screen, the right way up and the right shape, after one more warp of the original photographs."""
+    paths, cams = _photos()
+    store = tiles.TileStore()
+    out = os.path.join(TMP, "squared")
+    flat, rep = flatten.flatten(store, paths, out)
+    s = Session(flat, store, "squared")
+    s.photos = [str(q) for q in paths]
+    s.cam = {k: rep[k] for k in ("reference", "h", "origin")} | {"dir": out}
+    s.trim_mm = 0.0
+    s.auto()
+
+    art = np.float32([[500, 400], [3300, 400], [500, 2600], [3300, 2600]])       # tl, tr, bl, br, in art px
+    def in_view():                                                              # the same paint, in plane view px
+        r = int(s.cam["reference"])
+        u = cv2.perspectiveTransform(cv2.perspectiveTransform(art.reshape(-1, 1, 2), cams[r]),
+                                     np.float32(s.cam["h"][r])).reshape(-1, 2) - s.cam["origin"][r]
+        return s._plane("plane").to_output(s.layout.fwd(r, u))
+
+    res = s.square(in_view().tolist(), (280.0, 220.0))
+    assert res["how"] == "measured"
+    P = in_view()
+    top, bot = np.hypot(*(P[1] - P[0])), np.hypot(*(P[3] - P[2]))
+    left, right = np.hypot(*(P[2] - P[0])), np.hypot(*(P[3] - P[1]))
+    assert abs(top / bot - 1) < 0.01 and abs(left / right - 1) < 0.01, "still a trapezium"
+    assert abs(top / left / (280 / 220) - 1) < 0.01, f"came out {top / left:.3f} wide, not {280 / 220:.3f}"
+    corner = np.degrees(np.arctan2(*(P[2] - P[0])[::-1]) - np.arctan2(*(P[1] - P[0])[::-1]))
+    assert abs(corner - 90) < 1.0, f"the corner is {corner:.1f} degrees"
+    assert abs(s.dpi - res["rectangle"][0] / (280 / 25.4)) < 0.2       # the artwork measured gives the set its dpi
+
+
 def test_align_joins_groups_that_no_single_pair_ties():
     """Two columns whose shared strip is too narrow for any one pair (4.6 % of a scan): matched as wholes, the way
     stitching pairs first and then the pairs helps by hand."""

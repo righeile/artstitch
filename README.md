@@ -50,6 +50,14 @@ the histology parts taken out.
    (`.artstitch.json`) opened again. Scans of 8 or 16 bits a channel are used as
    they are; 32-bit ones (floating point, light kept linear as Photoshop keeps it)
    are brought to 16 bits through the scan's color profile.
+   **Photographs, not scans** is for an artwork too large for any flatbed, shot
+   in parts from a tripod or by hand: each photograph sees the wall through a
+   perspective of its own, and before anything else they are warped into one
+   plane -- the best-connected photograph's own -- and written beside the
+   originals in a `flattened` folder, which later scans skip. Nothing is
+   resampled twice: the squaring below warps the originals again rather than the
+   flattened copies. The box also lets PNG and JPEG in, and turns off the trim
+   that a flatbed needs and a camera does not.
 2. **Stitch**: every pair is searched for its overlap, rotation included
    (±3° by default; the box is on the page). Scans that came from ArtStitch Scan
    bring the tilt the scanner measured for each part, and the search starts from
@@ -76,7 +84,14 @@ the histology parts taken out.
    rectangle inside the sheet. Without edges: type an angle, drag the slider, or
    **draw a level line** along something that should be horizontal. The crop
    rectangle can be dragged or typed. **↺ ↻** turn the result by 90°; a turn
-   moves whole pixels and resamples nothing.
+   moves whole pixels and resamples nothing. For photographs there is one more
+   button: **mark the picture's corners**, four clicks round the artwork itself
+   (or anything in the shot known to be rectangular). The photographs are then
+   warped once more, from the originals, onto the plane those four corners make
+   a rectangle in, so the picture comes out square however the camera was held.
+   Typing the artwork's measured size settles the proportions outright and gives
+   the set a resolution, which a photograph does not otherwise carry; without it
+   the proportions are read from the corners, and the toast says which answered.
 4. **Patch**: dust, specks and hairs. Click on a speck, drag along a hair; the
    brush is in pixels of the full-size picture (`[` `]` change it). Each stroke is
    filled with a copy of the picture from close by, where the ring around the
@@ -201,6 +216,15 @@ reported in the terminal and left out.
 - On synthetic scans with a known truth (`test_artstitch.py`) two scans agree to
   about 0.1 px rms after stitching, from a blind search and from a hand
   placement half a scan off and a degree crooked.
+- Photographs: measured against the Oxford VGG `graf` set and its hand-measured
+  ground truth, the plane is recovered to 0.9 px at 20° between two shots, 1.3 px
+  at 30° and 2.4 px at 40°; past about 50° no matches are found at all. Shoot the
+  parts from roughly the same place and the overlaps generously.
+- The shape a marked rectangle is given: measured on eight real photographs of a
+  chessboard whose true proportions are known, within 3 % and usually within 1 %
+  when the file carries the lens's focal length, and typically 3 % but once 25 %
+  when it must be read from the corners alone. Type the artwork's size if you
+  have measured it -- then it is exact.
 
 ## Checks
 

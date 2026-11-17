@@ -30,6 +30,7 @@ import color
 import dust
 import edges
 import export
+import flatten
 import patch
 import tiles
 from align import align_set, overlapping_pairs
@@ -66,6 +67,20 @@ def resolve_folder(preset_folder: str, scans_folder: str) -> str:
     return f if os.path.isabs(f) else os.path.join(scans_folder, f)
 
 
+def _corners(pts) -> np.ndarray:
+    """Four points clicked in any order -> top-left, top-right, bottom-left, bottom-right.
+
+    The stitch is upright to within a few degrees by the time anyone is marking corners on it, so
+    which corner is which is decided by x + y and x - y, and no winding has to be worked out.
+    """
+    p = np.asarray(pts, float).reshape(4, 2)
+    a, b = p.sum(1), p[:, 0] - p[:, 1]
+    k = [int(a.argmin()), int(b.argmax()), int(b.argmin()), int(a.argmax())]
+    if len(set(k)) != 4:
+        raise ValueError("those four corners do not make a shape")
+    return p[k]
+
+
 class Session:
     def __init__(self, paths, store, name: str | None = None):
         self.paths = [str(p) for p in paths]
@@ -83,6 +98,8 @@ class Session:
         self.even = True                                # off: no shared falloff and no low-band blend at the cuts
         self.trimmed: dict[int, list[str]] = {}         # per scan, the sides the last alignment cut (edges.SIDES)
         self.tilts: list[float] | None = None           # degrees the paper lay at on the glass, if the scanner said
+        self.photos: list[str] = []                     # the photographs these were flattened from, if they were
+        self.cam: dict = {}                             # and how: {reference, h, origin, dir}, see ``square``
         self.dpi: float | None = None                   # None: from the scans, else 1200
         self.exports: list[dict] = []
         self.patches: list[dict] = []                   # {id, pts, r, src}: mosaic px; replaced, never changed in place
@@ -169,6 +186,44 @@ class Session:
         self.geom = clean(r)
         self._touch()
         return self.geom
+
+    def square(self, corners, size=None, progress=_quiet) -> dict:
+        """Flatten the photographs again, onto the plane in which the four marked corners are a rectangle.
+
+        The first flattening put the set into one of the photographs' own planes, which keeps whatever
+        angle that one was taken at.  Four corners of something known to be rectangular -- the canvas,
+        the sheet, the frame -- say what that angle was, and the photographs are warped once more, from
+        the originals, so nothing is ever resampled twice.  ``size`` (w, h, any unit) is the artwork
+        measured rather than guessed; it also settles the resolution, which a photograph does not carry.
+
+        The set is stitched again from nothing, so patches and dust found before are dropped -- they
+        were marked on a picture of another shape.
+        """
+        if not self.photos or not self.cam:
+            raise ValueError("this set did not come from photographs")
+        if self.layout is None:
+            raise ValueError("stitch the set first")
+        r = int(self.cam["reference"])
+        X = self._plane("plane").to_mosaic(_corners(corners))                  # the marked corners, in the mosaic
+        u = self.layout.inv(r, X) + np.asarray(self.cam["origin"][r], float)   # and in the photograph it came from
+        w, h = self.store.get(self.photos[r]).shape[1], self.store.get(self.photos[r]).shape[0]
+        ratio = None if not size else float(size[0]) / float(size[1])
+        W, H, how = flatten.rectangle(u, ((w - 1) / 2.0, (h - 1) / 2.0),
+                                      flatten.focal_px(self.photos[r], w), ratio)
+        R = cv2.getPerspectiveTransform(np.float32(u), np.float32([[0, 0], [W, 0], [0, H], [W, H]]))
+        Hs = [R @ np.asarray(H0, float) for H0 in self.cam["h"]]
+        new, rep = flatten.flatten(self.store, self.photos, self.cam["dir"], _sliced(progress, 0, 0.3), Hs=Hs)
+        self.paths = new
+        self.info = [tiles.probe(q) for q in new]
+        self.cam.update({"h": rep["h"], "origin": rep["origin"]})
+        self.layout = self.plan = self.geom = None
+        self.patches, self._undo, self.dust, self.trimmed = [], [], None, {}
+        self._mos = self._mos_key = None
+        self._touch()
+        if size:
+            self.dpi = round(W / (float(size[0]) / 25.4), 1)      # the artwork measured: now its pixels have a size
+        self.auto(_sliced(progress, 0.3, 1.0))
+        return {"how": how, "rectangle": [round(W, 1), round(H, 1)]}
 
     def turn(self, quarters: int) -> dict:
         """Turn the result by 90 degrees ``quarters`` times (clockwise when positive); the crop keeps its pixels."""
@@ -403,7 +458,7 @@ class Session:
             "geom": self.geom, "result_size": self.result_size(), "adj": self.adj, "max_deg": self.max_deg,
             "trim_mm": self.trim_mm, "warp": self.warp, "even": self.even, "tilts": self.tilts,
             "dpi": self.dpi, "exports": self.exports, "ver": self.ver, "key": self.key, "open": True,
-            "patched": len(self.patches), "undo": len(self._undo),
+            "patched": len(self.patches), "undo": len(self._undo), "camera": bool(self.photos),
             "qc": self.qc() if lay is not None else [],
         })
 
@@ -529,6 +584,7 @@ class Session:
     def to_dict(self) -> dict:
         return clean({"format": FORMAT, "name": self.name, "paths": self.paths, "max_deg": self.max_deg, "dpi": self.dpi,
                       "trim_mm": self.trim_mm, "warp": self.warp, "even": self.even, "tilts": self.tilts,
+                      "photos": self.photos, "cam": self.cam,
                       "layout": None if self.layout is None else self.layout.to_dict(), "report": self.report,
                       "plan": None if self.plan is None else self.plan.to_dict(), "geom": self.geom, "adj": self.adj,
                       "patches": self.patches, "exports": self.exports})
@@ -554,6 +610,7 @@ class Session:
         s = cls(paths, store, d["name"])
         s.max_deg, s.dpi, s.report = d.get("max_deg", 3.0), d.get("dpi"), d.get("report") or {}
         s.trim_mm, s.tilts = float(d.get("trim_mm") or 0.0), d.get("tilts")
+        s.photos, s.cam = d.get("photos") or [], d.get("cam") or {}
         s.warp = bool(d.get("warp", True))              # sets saved before Reposition existed were all warped
         s.even = bool(d.get("even", True))              # and their plan carries no field, so they look unchanged
         s.layout = None if d.get("layout") is None else Layout.from_dict(d["layout"])

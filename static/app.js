@@ -391,7 +391,7 @@
     S.epoch += 1;
     S.adj = clone(res.adj || {});
     S.adjVer += 1;
-    S.hist = null; S.histKey = ''; S.curveY = null; S.level = false; S.pickKind = null; S.crop = null;
+    S.hist = null; S.histKey = ''; S.curveY = null; S.level = false; S.square = false; cornersTool.pts = []; S.pickKind = null; S.crop = null;
     S.patches = []; S.shown = null; S.dust.shown = [];
     Object.values(views).forEach((v) => { v.info = null; v.tile = null; });
     updateSession(res);
@@ -403,6 +403,7 @@
     S.sess = res;
     document.dispatchEvent(new CustomEvent('artstitch:session', { detail: res }));   // for add-ons
     $('setLabel').textContent = res.open ? res.name + '  ·  ' + res.paths.length + (res.paths.length === 1 ? ' scan' : ' scans') : 'no set open';
+    $('btnSquare').hidden = $('sizeFields').hidden = $('squareHint').hidden = !res.camera;
     if (!res.open) return;
     $('setName').value = res.name;
     $('maxDeg').value = res.max_deg;
@@ -416,13 +417,15 @@
   function openPaths(paths, name, more) {
     const camera = $('scanCamera') && $('scanCamera').checked;
     return guard(async () => {
+      let cam = null;
       if (camera && paths.length > 1) {
         const { job } = await req('/api/flatten', 'POST', { paths });
         const flat = await runJob(job, 'flattenProgress', 'flattened');
         paths = flat.paths;
-        toast('Flattened onto photo ' + (flat.reference + 1) + ' — it is that photo\u2019s view the picture keeps.');
+        cam = { photos: flat.photos, reference: flat.reference, h: flat.h, origin: flat.origin, dir: flat.dir };
+        toast('Flattened onto photo ' + (flat.reference + 1) + ' — mark the picture\u2019s corners on Straighten & crop to square it.');
       }
-      openedSession(await req('/api/open', 'POST', { paths, name, camera, ...(more || {}) }));
+      openedSession(await req('/api/open', 'POST', { paths, name, camera, cam, ...(more || {}) }));
       showPage('stitch');
     });
   }
@@ -733,6 +736,42 @@
     },
   };
 
+  /* Four clicks round something rectangular in the picture: the photographs are flattened again onto that
+     plane, so the picture comes out square however the camera was held.  Drag the last corner to place it. */
+  const cornersTool = {
+    pts: [],
+    cursor() { return 'crosshair'; },
+    down(p) { this.pts.push([p.x, p.y]); views.plane.drawOverlay(); return true; },
+    move(p) { this.pts[this.pts.length - 1] = [p.x, p.y]; views.plane.drawOverlay(); },
+    up() {
+      if (this.pts.length < 4) return toast(4 - this.pts.length + ' more corner' + (this.pts.length === 3 ? '' : 's') + ' to mark.');
+      const corners = this.pts, w = parseFloat($('sizeW').value), h = parseFloat($('sizeH').value);
+      setSquare(false);
+      guard(async () => {
+        const { job } = await req('/api/square', 'POST',
+          { corners, size: w > 0 && h > 0 ? [w, h] : null });
+        const res = await runJob(job, 'squareProgress', 'squared');
+        updateSession(res);
+        await syncView(views.plane, false);
+        toast('Squared to ' + int(res.rectangle[0]) + ' \u00d7 ' + int(res.rectangle[1]) + ' px \u2014 shape from '
+          + { measured: 'the size you typed', camera: 'the lens in the file', corners: 'the corners alone',
+              sides: 'the sides, averaged' }[res.how] + '.');
+      });
+    },
+    draw(ctx, v) {
+      if (!this.pts.length) return;
+      ctx.strokeStyle = '#ffd54a'; ctx.lineWidth = v.px(2); ctx.beginPath();
+      this.pts.forEach(([x, y], i) => { const [sx, sy] = v.toScreen(x, y); i ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy); });
+      if (this.pts.length === 4) ctx.closePath();
+      ctx.stroke();
+      ctx.fillStyle = '#ffd54a';
+      this.pts.forEach(([x, y]) => {
+        const [sx, sy] = v.toScreen(x, y);
+        ctx.beginPath(); ctx.arc(sx, sy, v.px(4), 0, 2 * Math.PI); ctx.fill();
+      });
+    },
+  };
+
   function gridTool(inner) {                        // the tool with an optional guide grid under it
     return {
       __proto__: inner,
@@ -756,8 +795,18 @@
 
   function setLevel(on) {
     S.level = on;
+    if (on && S.square) setSquare(false);
     $('btnLevel').classList.toggle('armed', on);
     views.plane.tool = gridTool(on ? levelTool : cropTool);
+    views.plane.drawOverlay();
+  }
+
+  function setSquare(on) {
+    S.square = on;
+    if (on && S.level) setLevel(false);
+    cornersTool.pts = [];
+    $('btnSquare').classList.toggle('armed', on);
+    views.plane.tool = gridTool(on ? cornersTool : cropTool);
     views.plane.drawOverlay();
   }
 
@@ -783,6 +832,7 @@
     $('angleRange').oninput = () => { $('angleIn').value = parseFloat($('angleRange').value).toFixed(2); };
     $('angleRange').onchange = () => $('btnAngle').click();
     $('btnLevel').onclick = () => setLevel(!S.level);
+    $('btnSquare').onclick = () => setSquare(!S.square);
     const turn = (by) => () => S.sess.aligned && guard(async () => {
       updateSession(await req('/api/turn', 'POST', { by }));
       await syncView(views.plane, false);           // another shape: fit it again
