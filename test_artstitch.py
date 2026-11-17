@@ -780,12 +780,14 @@ def test_the_trim_comes_off_the_sides_a_neighbour_stands_behind():
     assert one.trimmed == {0: []}                            # one scan: nothing stands behind any side of it
 
 
-def _photos(seed: int = 7):
+def _photos(seed: int = 7, k1: float = 0.0):
     """Four photographs of a flat painting, each from its own corner of the room.
 
     A camera sees a flat thing through a homography, so each photograph is one: an upright window on
     the painting with its corners pulled about, which is what a tilt of fifteen or twenty degrees does.
-    Returns the files and the truth, art pixels -> photograph pixels, one per photograph.
+    Returns the files and the truth, art pixels -> photograph pixels, one per photograph.  With ``k1``
+    the lens bends too: the pixel at x (centred, in long sides) shows what a pinhole puts at
+    x / (1 + k1 |x|^2), and the truth is to where a pinhole would have put it.
     """
     art = _art(3000, 4000, seed)
     rng = np.random.default_rng(seed)
@@ -795,8 +797,15 @@ def _photos(seed: int = 7):
         box = np.float32([[x0, y0], [x0 + w, y0], [x0 + w, y0 + h], [x0, y0 + h]])
         H = cv2.getPerspectiveTransform(np.float32(box + rng.uniform(-0.07, 0.07, (4, 2)) * [w, h]),
                                         np.float32([[0, 0], [w, 0], [w, h], [0, h]]))
-        q = os.path.join(TMP, f"photo_{k + 1}.tif")
-        tifffile.imwrite(q, cv2.warpPerspective(art, H, (w, h), flags=cv2.INTER_CUBIC))
+        q = os.path.join(TMP, f"photo_{k + 1}{'_lens' if k1 else ''}.tif")
+        if k1:
+            c = np.array([(w - 1) / 2.0, (h - 1) / 2.0])
+            x = (np.dstack(np.meshgrid(np.arange(w), np.arange(h))) - c) / max(w, h)
+            pin = c + max(w, h) * x / (1 + k1 * (x * x).sum(-1, keepdims=True))
+            at = cv2.perspectiveTransform(pin.reshape(-1, 1, 2), np.linalg.inv(H)).reshape(h, w, 2)
+            tifffile.imwrite(q, cv2.remap(art, at.astype(np.float32), None, cv2.INTER_CUBIC))
+        else:
+            tifffile.imwrite(q, cv2.warpPerspective(art, H, (w, h), flags=cv2.INTER_CUBIC))
         paths.append(q)
         truth.append(H)
     return paths, truth
@@ -811,6 +820,18 @@ def test_the_kept_rectangle_stays_inside_the_photograph():
         for c in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)):
             assert cv2.pointPolygonTest(quad.reshape(-1, 1, 2), (float(c[0]), float(c[1])), True) >= 0, f"{c} is outside {quad}"
         assert (x1 - x0) * (y1 - y0) > 0.6 * cv2.contourArea(quad.reshape(-1, 1, 2))
+    # a frame seen through a barrel lens, its bend taken out, has its sides bowed in: all of the rectangle inside it
+    w, h = 1200, 900
+    t = np.linspace(0, 1, 33)[:-1, None]
+    rim = np.concatenate([t * [w - 1, 0], [w - 1, 0] + t * [0, h - 1], [w - 1, h - 1] - t * [w - 1, 0], [0, h - 1] - t * [0, h - 1]])
+    poly = flatten.undistort(rim, flatten._K((h, w)), -0.2)
+    assert np.allclose(flatten.distort(poly, flatten._K((h, w)), -0.2), rim)             # and back again
+    x0, y0, x1, y1 = flatten._inscribed(poly)
+    s = np.linspace(0, 1, 60)
+    edge = np.concatenate([np.c_[x0 + s * (x1 - x0), np.full(60, y0)], np.c_[x0 + s * (x1 - x0), np.full(60, y1)],
+                           np.c_[np.full(60, x0), y0 + s * (y1 - y0)], np.c_[np.full(60, x1), y0 + s * (y1 - y0)]])
+    inside = [cv2.pointPolygonTest(np.float32(poly).reshape(-1, 1, 2), (float(x), float(y)), False) for x, y in edge]
+    assert min(inside) >= 0 and (x1 - x0) * (y1 - y0) > 0.85 * cv2.contourArea(np.float32(poly).reshape(-1, 1, 2))
 
 
 def test_photographs_of_one_flat_thing_are_put_back_into_one_plane():
@@ -829,6 +850,7 @@ def test_photographs_of_one_flat_thing_are_put_back_into_one_plane():
 
     for k in range(len(flat)):
         assert report["kept"][k] > 0.5, f"photo {k + 1} lost {100 * (1 - report['kept'][k]):.0f}% of itself"
+    assert report["k1"] == 0.0, f"a pinhole was given a lens bend of {report['k1']}"
 
     lay, rep = align_set(store, flat, mesh=True)
     assert not rep["disconnected"]
@@ -836,6 +858,26 @@ def test_photographs_of_one_flat_thing_are_put_back_into_one_plane():
     # the same four windows cut out with no perspective at all sit at 0.9 px: this painting is only
     # 4000 px wide, and what is left here is the resampling, not the flattening.  A flattening gone
     # wrong is tens of pixels or a set that will not join at all, which is what this catches.
+    assert worst < 2.5, f"the flattened photographs still disagree by {worst:.2f} px"
+
+
+def test_a_lens_bend_is_read_off_the_overlaps_and_taken_out():
+    """Photographs through a barrel lens (k1 = -0.12, 70 px at a corner) differ by homographies only once the
+    bend is out.  It is found from the matches alone, every route into the plane agrees again, and the
+    flattened photographs join as well as a pinhole's do."""
+    paths, cams = _photos(k1=-0.12)
+    store = tiles.TileStore()
+    Hs, report = flatten.homographies(store, paths)
+    assert abs(report["k1"] / -0.12 - 1) < 0.05, f"found k1 = {report['k1']}, not -0.12"
+    xs, ys = np.meshgrid(np.linspace(1750, 2250, 25), np.linspace(1250, 1700, 25))   # paint all four saw
+    pts = np.float32(np.c_[xs.ravel(), ys.ravel()]).reshape(-1, 1, 2)
+    routes = [cv2.perspectiveTransform(pts, H @ cam).reshape(-1, 2) for H, cam in zip(Hs, cams)]
+    spread = max(float(np.hypot(*(a - b).T).max()) for a in routes for b in routes)
+    assert spread < 2.0, f"the routes into the plane disagree by {spread:.2f} px"
+    flat, _ = flatten.flatten(store, paths, os.path.join(TMP, "flattened_lens"), Hs=Hs, k1=report["k1"])
+    lay, rep = align_set(store, flat, mesh=True)
+    assert not rep["disconnected"]
+    worst = max(v["rms"] for v in rep["residual"].values())
     assert worst < 2.5, f"the flattened photographs still disagree by {worst:.2f} px"
 
 

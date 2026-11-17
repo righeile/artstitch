@@ -293,7 +293,7 @@ def open_set():
             raise Problem(f"not a file: {p}")
     s = Session(paths, STORE, (b.get("name") or "").strip() or None)
     if b.get("cam"):                           # these were flattened from photographs: keep how, so it can be redone
-        s.photos, s.cam = [str(p) for p in b["cam"]["photos"]], {k: b["cam"][k] for k in ("reference", "h", "origin", "dir")}
+        s.photos, s.cam = [str(p) for p in b["cam"]["photos"]], {k: b["cam"][k] for k in ("reference", "h", "origin", "dir")} | {"k1": float(b["cam"].get("k1") or 0.0)}
     s.trim_mm = 0.0 if b.get("camera") else TRIM_MM   # a scan off a flatbed has a bent strip wherever the sheet ran off it; a photo has no glass
     tilts = b.get("tilts")                     # degrees the paper lay at on the glass, one per scan
     if tilts is not None:

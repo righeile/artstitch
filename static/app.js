@@ -422,8 +422,8 @@
         const { job } = await req('/api/flatten', 'POST', { paths });
         const flat = await runJob(job, 'flattenProgress', 'flattened');
         paths = flat.paths;
-        cam = { photos: flat.photos, reference: flat.reference, h: flat.h, origin: flat.origin, dir: flat.dir };
-        toast('Flattened onto photo ' + (flat.reference + 1) + ' — mark the picture\u2019s corners on Straighten & crop to square it.');
+        cam = { photos: flat.photos, reference: flat.reference, h: flat.h, origin: flat.origin, dir: flat.dir, k1: flat.k1 };
+        toast('Flattened onto photo ' + (flat.reference + 1) + (flat.k1 ? ', the lens\u2019s bend taken out' : '') + ' — mark the picture\u2019s corners on Straighten & crop to square it.');
       }
       openedSession(await req('/api/open', 'POST', { paths, name, camera, cam, ...(more || {}) }));
       showPage('stitch');

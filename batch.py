@@ -81,7 +81,7 @@ def _one(row: dict, preset: dict, store, colour: dict, progress, camera: bool = 
         files, rep = flatten.flatten(store, photos, flat, _sliced(progress, 0, 0.2))
     s = Session(files, store, row["name"])
     if photos:
-        s.photos, s.cam = photos, {"reference": rep["reference"], "h": rep["h"], "origin": rep["origin"], "dir": flat}
+        s.photos, s.cam = photos, {"reference": rep["reference"], "h": rep["h"], "origin": rep["origin"], "dir": flat, "k1": rep["k1"]}
     s.auto(_sliced(progress, 0.2 if photos else 0, 0.55))
     if s.report.get("disconnected"):                    # an export would be the pieces side by side: keep the session to open, say why
         keep_session()

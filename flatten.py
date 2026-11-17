@@ -11,6 +11,10 @@ camera, so nothing here can know which way the wall faced: if that photograph wa
 angle, the finished picture keeps that angle.  Hold the camera square for one shot and the
 whole set comes out square.
 
+A real lens is not a pinhole: it bends straight lines, most at the corners, and then two
+photographs differ by a homography only after that bend is taken out.  So the bend is read off
+the same matches (``lens``) and taken out in the same warp.
+
 Each flattened photograph is cut down to the largest upright rectangle inside the warped
 frame, so that no tile carries any "nothing here" corners -- a mask only this stage would
 know about, which nothing downstream reads.
@@ -25,10 +29,14 @@ import cv2
 import numpy as np
 import tifffile
 from PIL import Image
+from scipy.optimize import minimize_scalar
+
+import edges
 
 MIN_INLIERS = 25          # matches that survive RANSAC before a pair is believed to be the same wall
 WORK_PX = 1500            # long side the features are found on: more is slower and finds no more pairs
 MAX_STRETCH = 3.0         # a homography that blows a photograph up by more than this is a bad fit, not a steep angle
+LENS_GAIN = 0.9           # a lens bend is believed only if it takes a tenth off how much the matches disagree
 
 
 def _quiet(p: float, m: str) -> None:
@@ -40,19 +48,76 @@ def _features(gray: np.ndarray):
     return sift.detectAndCompute(np.clip(gray, 0, 255).astype(np.uint8), None)
 
 
-def _pair(ka, da, kb, db) -> tuple[np.ndarray | None, int]:
-    """Homography taking photo b's pixels to photo a's, and how many matches agreed."""
+def _matches(ka, da, kb, db):
+    """Photo b's features found again in photo a: (b's points, a's points), or None if too few."""
     if da is None or db is None or len(da) < 4 or len(db) < 4:
-        return None, 0
+        return None
     m = cv2.BFMatcher(cv2.NORM_L2).knnMatch(db, da, k=2)
     good = [p[0] for p in m if len(p) == 2 and p[0].distance < 0.75 * p[1].distance]
     if len(good) < MIN_INLIERS:
-        return None, 0
-    src = np.float32([kb[g.queryIdx].pt for g in good]).reshape(-1, 1, 2)
-    dst = np.float32([ka[g.trainIdx].pt for g in good]).reshape(-1, 1, 2)
+        return None
+    return np.float64([kb[g.queryIdx].pt for g in good]), np.float64([ka[g.trainIdx].pt for g in good])
+
+
+def _pair(src, dst) -> tuple[np.ndarray | None, np.ndarray]:
+    """Homography taking b's points to a's, and which of them agreed (all False if too few did)."""
     H, inl = cv2.findHomography(src, dst, cv2.USAC_MAGSAC, 3.0, maxIters=20000, confidence=0.999)
-    n = 0 if inl is None else int(inl.sum())
-    return (H, n) if H is not None and n >= MIN_INLIERS else (None, 0)
+    inl = np.zeros(len(src), bool) if inl is None else inl.ravel() > 0
+    return (H, inl) if H is not None and inl.sum() >= MIN_INLIERS else (None, np.zeros(len(src), bool))
+
+
+def _K(shape, A=None) -> np.ndarray:
+    """Photo pixel -> where the lens is described: centred, in units of the long side (``A``: at a proxy's scale)."""
+    h, w = shape[:2]
+    s = float(max(w, h))
+    K = np.array([[s, 0, (w - 1) / 2.0], [0, s, (h - 1) / 2.0], [0, 0, 1.0]])
+    return K if A is None else A @ K
+
+
+def undistort(p, K, k1: float):
+    """Photo pixels where a pinhole would have put them: the division model, x / (1 + k1 |x|^2).  Barrel is k1 < 0."""
+    if not k1:
+        return p
+    x = (p - K[:2, 2]) / K[0, 0]
+    return K[:2, 2] + K[0, 0] * x / (1 + k1 * (x * x).sum(-1, keepdims=True))
+
+
+def distort(p, K, k1: float):
+    """The other way: where the lens put what a pinhole would have put at ``p``."""
+    if not k1:
+        return p
+    x = (p - K[:2, 2]) / K[0, 0]
+    return K[:2, 2] + K[0, 0] * x * 2 / (1 + np.sqrt(np.maximum(1 - 4 * k1 * (x * x).sum(-1, keepdims=True), 0)))
+
+
+def lens(pairs) -> float:
+    """How much the lens bends straight lines (k1, see ``undistort``), from points matched between photographs.
+
+    Through a pinhole, two photographs of a flat thing differ by a homography exactly; through a real lens
+    they do not, by the bend.  So the bend is whatever makes the matches a homography again, judged where
+    they were seen.  0.0 unless it takes a tenth off their disagreement: a camera that straightened its own
+    pictures (any phone does) gets nothing.  ``pairs``: (points in a, the same points in b, a's K, b's K).
+
+    Measured on the corners of OpenCV's eight chessboard photographs (``left*.jpg``) matched across all 28
+    pairs: k1 = -0.40, and their disagreement goes from 1.13 px to 0.78.  (The photographs' own features say
+    nothing there: the camera stood still and the board moved, so what matches is the room.)  Synthetic
+    photographs through k1 = -0.12 give it back within 5 %.  Handheld photographs from cameras that
+    straighten their own (OpenCV's newspaper set, the Oxford graffiti) gain 2 and 3 % and get 0.
+    """
+    def rms(k1: float) -> float:
+        sse = n = 0
+        for a, b, Ka, Kb in pairs:
+            ua, ub = undistort(a, Ka, k1), undistort(b, Kb, k1)
+            H, _ = cv2.findHomography(ub, ua, 0)
+            if H is None:
+                return math.inf
+            e = distort(cv2.perspectiveTransform(ub.reshape(-1, 1, 2), H).reshape(-1, 2), Ka, k1) - a
+            sse, n = sse + float((e * e).sum()), n + len(e)
+        return math.sqrt(sse / n)
+    if not pairs:
+        return 0.0
+    best = minimize_scalar(rms, bounds=(-0.8, 0.5), method="bounded", options={"xatol": 1e-4})
+    return round(float(best.x), 5) if best.fun < LENS_GAIN * rms(0.0) else 0.0
 
 
 def _tree(n: int, w: np.ndarray, root: int) -> list[int]:
@@ -68,35 +133,21 @@ def _tree(n: int, w: np.ndarray, root: int) -> list[int]:
     return par if len(seen) == n else [-2 if k not in seen else par[k] for k in range(n)]
 
 
-def _inscribed(quad: np.ndarray) -> tuple[int, int, int, int]:
-    """The largest upright rectangle inside a convex quadrilateral, as (x0, y0, x1, y1).
+def _inscribed(poly: np.ndarray, cells: int = 512) -> tuple[int, int, int, int]:
+    """The largest upright rectangle inside a photograph's warped frame, any simple polygon, as (x0, y0, x1, y1).
 
-    A vertical line crosses a convex shape twice, so the quadrilateral is just a top and a bottom
-    over a range of x, and the best rectangle between two of 257 columns is found by running those
-    two in.  What it costs against the true optimum is a column's width; what it saves is every
-    "nothing here" corner, which no later stage would know to leave alone.
+    Found on a grid ``cells`` across and kept a cell in from the frame, so it holds the photograph's own
+    pixels only -- a lens's bend makes the frame's sides curves.  A cell is what it costs against the true
+    optimum; what it saves is every "nothing here" corner, which no later stage would know to leave alone.
     """
-    lo, hi = quad.min(0), quad.max(0)
-    xs = np.linspace(lo[0], hi[0], 257)
-    cuts = np.full((4, len(xs)), np.nan)
-    for i, ((ax, ay), (bx, by)) in enumerate(zip(quad, np.roll(quad, -1, 0))):
-        if ax == bx:
-            continue
-        t = (xs - ax) / (bx - ax)
-        cuts[i] = np.where((t >= 0) & (t <= 1), ay + t * (by - ay), np.nan)
-    with np.errstate(invalid="ignore"):
-        top = np.where(np.isnan(cuts).all(0), np.inf, np.nanmin(cuts, 0))
-        bot = np.where(np.isnan(cuts).all(0), -np.inf, np.nanmax(cuts, 0))
-    best = (0.0, lo[0], lo[1], lo[0] + 1, lo[1] + 1)
-    for j in range(len(xs) - 1):
-        y0 = np.maximum.accumulate(top[j:])                  # the lowest top, and the highest bottom,
-        y1 = np.minimum.accumulate(bot[j:])                  # over every column the rectangle spans
-        area = np.where(y1 > y0, (y1 - y0) * (xs[j:] - xs[j]), 0.0)
-        i = int(area.argmax())
-        if area[i] > best[0]:
-            best = (area[i], xs[j], y0[i], xs[j + i], y1[i])
-    _, x0, y0, x1, y1 = best
-    return int(np.ceil(x0)), int(np.ceil(y0)), int(np.floor(x1)), int(np.floor(y1))
+    lo = poly.min(0)
+    q = float((poly.max(0) - lo).max()) / cells
+    gw, gh = np.ceil((poly.max(0) - lo) / q).astype(int) + 1
+    m = np.zeros((gh, gw), np.uint8)
+    cv2.fillPoly(m, [np.round((poly - lo) / q * 16).astype(np.int32).reshape(-1, 1, 2)], 1, cv2.LINE_8, 4)
+    x0, y0, x1, y1 = edges.largest_rectangle(cv2.erode(m, np.ones((3, 3), np.uint8), borderType=cv2.BORDER_CONSTANT, borderValue=0) > 0)
+    return (int(np.ceil(lo[0] + x0 * q)), int(np.ceil(lo[1] + y0 * q)),
+            int(np.floor(lo[0] + (x1 - 1) * q)), int(np.floor(lo[1] + (y1 - 1) * q)))
 
 
 def focal_px(path, width: int) -> float | None:
@@ -169,40 +220,50 @@ def rectangle(quad: np.ndarray, centre, f: float | None = None, ratio: float | N
 
 
 def homographies(store, paths, progress=_quiet) -> tuple[list[np.ndarray], dict]:
-    """One homography per photograph, taking its own pixels into the best-connected one's plane."""
+    """One homography per photograph, taking its own pixels -- with the lens's bend taken out, the report's
+    ``k1`` -- into the best-connected one's plane."""
     n = len(paths)
     if n == 1:
-        return [np.eye(3)], {"reference": 0, "inliers": {}}
+        return [np.eye(3)], {"reference": 0, "inliers": {}, "k1": 0.0}
     shape = store.get(paths[0]).shape
     f = max(1, int(round(max(shape) / WORK_PX)))
-    feats = []
+    # proxy pixel i covers source [f i, f i + f), so u_src = f u_proxy + (f - 1) / 2
+    A = np.array([[1.0 / f, 0, -(f - 1) / (2.0 * f)], [0, 1.0 / f, -(f - 1) / (2.0 * f)], [0, 0, 1.0]])
+    Ai = np.linalg.inv(A)
+    feats, Ks = [], [_K(store.get(p).shape, A) for p in paths]
     for k, p in enumerate(paths):
         progress(0.1 + 0.3 * k / n, f"looking at photo {k + 1}")
         feats.append(_features(store.proxy(p, f, gray=True)))
-    w = np.zeros((n, n))
-    H = {}
+    found = {}
     for a in range(n):
         for b in range(a + 1, n):
             progress(0.4 + 0.4 * (a * n + b) / (n * n), f"matching {a + 1} and {b + 1}")
-            Hab, inl = _pair(*feats[a], *feats[b])
-            if Hab is not None:
-                w[a, b] = w[b, a] = inl
-                H[a, b], H[b, a] = Hab, np.linalg.inv(Hab)
+            m = _matches(*feats[a], *feats[b])
+            if m is not None:
+                found[a, b] = m
+    fits = {ab: _pair(*m) for ab, m in found.items()}
+    k1 = lens([(dst[i], src[i], Ks[a], Ks[b]) for (a, b), (src, dst) in found.items()
+               for i in [fits[a, b][1]] if i.any()])
+    if k1:                                              # again on the straightened points: the corners agree now too
+        fits = {(a, b): _pair(undistort(src, Ks[b], k1), undistort(dst, Ks[a], k1)) for (a, b), (src, dst) in found.items()}
+    w = np.zeros((n, n))
+    H = {}
+    for (a, b), (Hab, inl) in fits.items():
+        if Hab is not None:
+            w[a, b] = w[b, a] = inl.sum()
+            H[a, b], H[b, a] = Hab, np.linalg.inv(Hab)
     root = int(w.sum(1).argmax())
     par = _tree(n, w, root)
     if -2 in par:
         bad = [str(k + 1) for k, v in enumerate(par) if v == -2]
         raise ValueError("no overlap found with photo " + ", ".join(bad) + " -- the photos must overlap each other")
-    # proxy pixel i covers source [f i, f i + f), so u_src = f u_proxy + (f - 1) / 2
-    A = np.array([[1.0 / f, 0, -(f - 1) / (2.0 * f)], [0, 1.0 / f, -(f - 1) / (2.0 * f)], [0, 0, 1.0]])
-    Ai = np.linalg.inv(A)
     out = [None] * n
     out[root] = np.eye(3)
     for k in sorted(range(n), key=lambda k: _depth(par, k)):
         if out[k] is None:
             out[k] = out[par[k]] @ H[par[k], k]
-    return [Ai @ (M / M[2, 2]) @ A for M in out], {"reference": root, "inliers": {f"{a + 1}-{b + 1}": int(w[a, b])
-                                                                                 for a in range(n) for b in range(a + 1, n) if w[a, b]}}
+    return [Ai @ (M / M[2, 2]) @ A for M in out], {"reference": root, "k1": k1, "inliers": {
+        f"{a + 1}-{b + 1}": int(w[a, b]) for a in range(n) for b in range(a + 1, n) if w[a, b]}}
 
 
 def _depth(par: list[int], k: int) -> int:
@@ -212,15 +273,32 @@ def _depth(par: list[int], k: int) -> int:
     return d
 
 
-def flatten(store, paths, out_dir, progress=_quiet, Hs=None) -> tuple[list[str], dict]:
+def _warp(img, M, K, k1: float, size):
+    """``img`` put where ``M`` takes its pinhole pixels (see ``undistort``), ``size`` = (w, h)."""
+    if not k1:
+        return cv2.warpPerspective(img, M, size, flags=cv2.INTER_CUBIC)
+    w, h = size
+    out = np.empty((h, w) + img.shape[2:], img.dtype)
+    Mi = np.linalg.inv(M)
+    for y0 in range(0, h, 256):                         # in strips: a map of the whole is 8 bytes a pixel
+        y1 = min(y0 + 256, h)
+        v, u = np.mgrid[y0:y1, 0:w]
+        q = cv2.perspectiveTransform(np.c_[u.ravel(), v.ravel()].astype(np.float64).reshape(-1, 1, 2), Mi).reshape(-1, 2)
+        out[y0:y1] = cv2.remap(img, distort(q, K, k1).astype(np.float32).reshape(y1 - y0, w, 2), None, cv2.INTER_CUBIC)
+    return out
+
+
+def flatten(store, paths, out_dir, progress=_quiet, Hs=None, k1: float = 0.0) -> tuple[list[str], dict]:
     """Write a flattened copy of every photograph and return the new paths.
 
-    ``Hs`` are homographies worked out before -- how the set is put back onto a plane chosen by hand
-    rather than onto a photograph's own (see ``rectangle``); the report carries them either way.
+    ``Hs`` (with the lens's ``k1``) are homographies worked out before -- how the set is put back onto a
+    plane chosen by hand rather than onto a photograph's own (see ``rectangle``); the report carries
+    them either way.
     """
     report: dict = {"reference": 0, "inliers": {}}
     if Hs is None:
         Hs, report = homographies(store, paths, progress)
+        k1 = report["k1"]
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     new, kept, origin = [], [], []
@@ -228,22 +306,25 @@ def flatten(store, paths, out_dir, progress=_quiet, Hs=None) -> tuple[list[str],
         progress(0.8 + 0.2 * k / len(paths), f"flattening photo {k + 1}")
         img = store.get(p).rgb
         h, w = img.shape[:2]
-        box = np.float32([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]]).reshape(-1, 1, 2)
-        quad = cv2.perspectiveTransform(box, H).reshape(4, 2)
+        K = _K(img.shape)
+        t = np.linspace(0, 1, 33)[:-1, None]            # the frame, closely enough to follow the lens's curve
+        rim = np.concatenate([t * [w - 1, 0], [w - 1, 0] + t * [0, h - 1], [w - 1, h - 1] - t * [w - 1, 0], [0, h - 1] - t * [0, h - 1]])
+        poly = cv2.perspectiveTransform(undistort(rim, K, k1).reshape(-1, 1, 2), H).reshape(-1, 2)
+        quad = poly[::32]
         side = np.hypot(*(np.roll(quad, -1, 0) - quad).T)
         if side.max() > MAX_STRETCH * max(w, h):
             raise ValueError(f"photo {k + 1} does not look like the same flat thing as the others")
-        x0, y0, x1, y1 = _inscribed(quad)
+        x0, y0, x1, y1 = _inscribed(poly)
         x0, y0, x1, y1 = x0 + 2, y0 + 2, x1 - 2, y1 - 2        # cubic reads two pixels out: stay that far inside the frame
         T = np.array([[1.0, 0, -x0], [0, 1.0, -y0], [0, 0, 1.0]])
-        flat = cv2.warpPerspective(img, T @ H, (x1 - x0 + 1, y1 - y0 + 1), flags=cv2.INTER_CUBIC)
+        flat = _warp(img, T @ H, K, k1, (x1 - x0 + 1, y1 - y0 + 1))
         kept.append(round((x1 - x0 + 1) * (y1 - y0 + 1) / float(w * h), 3))
         origin.append([x0, y0])
         q = out / (Path(p).stem + ".tif")
         tifffile.imwrite(q, flat, compression="zlib", photometric="rgb")
         store.drop(q)                                   # flattened again onto another plane: forget the old pixels
         new.append(str(q))
-    report["kept"] = kept
+    report["kept"], report["k1"] = kept, k1
     report["h"] = [H.tolist() for H in Hs]          # photograph pixel -> the plane, before the cut
     report["origin"] = origin                       # where the cut starts in it: flattened pixel + this = plane
     return new, report

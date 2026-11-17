@@ -99,7 +99,7 @@ class Session:
         self.trimmed: dict[int, list[str]] = {}         # per scan, the sides the last alignment cut (edges.SIDES)
         self.tilts: list[float] | None = None           # degrees the paper lay at on the glass, if the scanner said
         self.photos: list[str] = []                     # the photographs these were flattened from, if they were
-        self.cam: dict = {}                             # and how: {reference, h, origin, dir}, see ``square``
+        self.cam: dict = {}                             # and how: {reference, h, origin, dir, k1}, see ``square``
         self.dpi: float | None = None                   # None: from the scans, else 1200
         self.exports: list[dict] = []
         self.patches: list[dict] = []                   # {id, pts, r, src}: mosaic px; replaced, never changed in place
@@ -205,14 +205,16 @@ class Session:
             raise ValueError("stitch the set first")
         r = int(self.cam["reference"])
         X = self._plane("plane").to_mosaic(_corners(corners))                  # the marked corners, in the mosaic
-        u = self.layout.inv(r, X) + np.asarray(self.cam["origin"][r], float)   # and in the photograph it came from
+        u = self.layout.inv(r, X) + np.asarray(self.cam["origin"][r], float)   # in the plane the set is on
+        p = cv2.perspectiveTransform(u.reshape(-1, 1, 2), np.linalg.inv(self.cam["h"][r])).reshape(-1, 2)   # in the photograph, lens bend out
         w, h = self.store.get(self.photos[r]).shape[1], self.store.get(self.photos[r]).shape[0]
         ratio = None if not size else float(size[0]) / float(size[1])
-        W, H, how = flatten.rectangle(u, ((w - 1) / 2.0, (h - 1) / 2.0),
+        W, H, how = flatten.rectangle(p, ((w - 1) / 2.0, (h - 1) / 2.0),
                                       flatten.focal_px(self.photos[r], w), ratio)
         R = cv2.getPerspectiveTransform(np.float32(u), np.float32([[0, 0], [W, 0], [0, H], [W, H]]))
         Hs = [R @ np.asarray(H0, float) for H0 in self.cam["h"]]
-        new, rep = flatten.flatten(self.store, self.photos, self.cam["dir"], _sliced(progress, 0, 0.3), Hs=Hs)
+        new, rep = flatten.flatten(self.store, self.photos, self.cam["dir"], _sliced(progress, 0, 0.3), Hs=Hs,
+                                   k1=float(self.cam.get("k1") or 0.0))
         self.paths = new
         self.info = [tiles.probe(q) for q in new]
         self.cam.update({"h": rep["h"], "origin": rep["origin"]})

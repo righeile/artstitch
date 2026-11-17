@@ -54,7 +54,10 @@ the histology parts taken out.
    in parts from a tripod or by hand: each photograph sees the wall through a
    perspective of its own, and before anything else they are warped into one
    plane -- the best-connected photograph's own -- and written beside the
-   originals in a `flattened` folder, which later scans skip. Nothing is
+   originals in a `flattened` folder, which later scans skip. A lens that bows
+   straight lines is read off the overlaps too, one bend for the set, and taken
+   out in the same warp -- but only when it fits the matches clearly better than
+   no bend at all, so a lens with none to speak of is left alone. Nothing is
    resampled twice: the squaring below warps the originals again rather than the
    flattened copies. The box also lets PNG and JPEG in, and turns off the trim
    that a flatbed needs and a camera does not.
@@ -224,6 +227,12 @@ reported in the terminal and left out.
   ground truth, the plane is recovered to 0.9 px at 20° between two shots, 1.3 px
   at 30° and 2.4 px at 40°; past about 50° no matches are found at all. Shoot the
   parts from roughly the same place and the overlaps generously.
+- The lens bend: synthetic photographs taken through a barrel lens give it back
+  within 5 %, and squared, their marked rectangle comes out within 0.1 % of its
+  measured shape with a 90.1° corner. The corners of a chessboard matched across
+  eight real photographs agree to 0.78 px rms with it taken out, 1.13 without.
+  The `graf` set and a newspaper shot in four parts gain 2-3 % from a bend and
+  are left unbent.
 - The shape a marked rectangle is given: measured on eight real photographs of a
   chessboard whose true proportions are known, within 3 % and usually within 1 %
   when the file carries the lens's focal length, and typically 3 % but once 25 %
